@@ -20,12 +20,25 @@ def is_available(timeout=2):
         return False
 
 
-def generate(system_prompt, user_prompt, timeout=120, model=None):
+def generate(system_prompt, user_prompt, timeout=120, model=None,
+             temperature=0.7, num_predict=600, seed=None, top_p=None):
     """调用本地 Ollama 生成文本。
+
+    temperature / num_predict / seed / top_p 由上层（llm/ai_gateway.py）控制：
+    防幻觉问答用 temperature=0.2 + 固定 seed，保证"同问同答、少发散"。
 
     失败抛出异常，由上层降级到知识库兜底，保证离线稳定。
     """
     model = model or MODEL_NAME
+    options = {
+        'temperature': float(temperature),
+        # 报告已缩短，限制输出长度，避免 7B 在 6GB 显存下生成过慢
+        'num_predict': int(num_predict),
+    }
+    if seed is not None:
+        options['seed'] = int(seed)
+    if top_p is not None:
+        options['top_p'] = float(top_p)
     payload = {
         'model': model,
         'messages': [
@@ -33,11 +46,7 @@ def generate(system_prompt, user_prompt, timeout=120, model=None):
             {'role': 'user', 'content': user_prompt},
         ],
         'stream': False,
-        'options': {
-            'temperature': 0.7,
-            # 报告已缩短，限制输出长度，避免 7B 在 6GB 显存下生成过慢
-            'num_predict': 600,
-        },
+        'options': options,
     }
     r = requests.post(f'{OLLAMA_API}/api/chat', json=payload,
                       timeout=timeout, proxies={'http': None, 'https': None})

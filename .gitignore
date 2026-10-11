@@ -24,6 +24,9 @@ selected_real_scenes/
 output/
 runs/
 
+# --- HTTPS 自签证书（本机生成，不入库）---
+config/certs/
+
 # --- Python 缓存与环境 ---
 __pycache__/
 *.pyc
@@ -44,3 +47,6 @@ Thumbs.db
 
 # --- Docker (可选) ---
 .dockerignore
+
+# --- 独立发布的子仓库（内含自己的 .git，别当成本仓库的文件）---
+_dist/

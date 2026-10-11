@@ -15,18 +15,19 @@ import json
 import time
 import asyncio
 import base64
+import threading
 import traceback
 from datetime import datetime
 from io import BytesIO
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
 
 # 尝试导入FastAPI（可选依赖）
 try:
-    from fastapi import FastAPI, File, UploadFile, Form, HTTPException, WebSocket, WebSocketDisconnect
-    from fastapi.responses import JSONResponse, HTMLResponse
+    from fastapi import (FastAPI, File, UploadFile, Form, HTTPException, WebSocket,
+                         WebSocketDisconnect, Request)
+    from fastapi.responses import JSONResponse, HTMLResponse, Response
     from fastapi.staticfiles import StaticFiles
     import uvicorn
     HAS_WEB = True
@@ -34,219 +35,27 @@ except ImportError:
     HAS_WEB = False
     print("[WARN] FastAPI/uvicorn not installed. Install: pip install fastapi uvicorn python-multipart websockets")
 
-# 加载配置
-from tool.parser import get_config
-from tool.tools import format_data, draw_info, assess_risk
+# 应用级共享状态（模型、反馈设备、相机池、历史记录）
+from app.state import (
+    config, yolo_model, device, weights_path, conf_thres, imgsz,
+    feedback, spray, cfg_spray, cfg_cameras, camera_num, cfg_camera,
+    _CAM_SOURCES, _cam_kwargs, _camera_key, resolve_camera,
+    cam_get_source, cam_release_source, cam_pool_state,
+    spray_history, _pump_lock, _pump_state, _last_result, _record_history,
+)
+# 推理与风险联动
+from app.inference import (
+    _predict_and_format, _with_advice, _linkage,
+    _ensure_pump, _latest_result,
+)
 
-# 防治建议：知识库秒出兜底 + 本地大模型（Ollama）增强
-# 与 GUI（main.py 的 LocalAdviceWorker）用同一套 llm/ 与 prompts/ 组件
+# 防治建议：知识库秒出兜底 + RAG 接地生成（Ollama）
 from llm import knowledge_base
-try:
-    from llm import local_llm
-except Exception:          # 本地模型不可用时静默降级为知识库
-    local_llm = None
-from prompts.core.prompt_manager import prompt_manager
-
-config = get_config('./config/configs.yaml')
-cfg_model = config.MODEL
-weights_path = cfg_model.WEIGHT
-conf_thres = float(cfg_model.CONF)
-imgsz = int(cfg_model.IMGSIZE)
-device = cfg_model.DEVICE
-chinese_name = config.get('CONFIG', {}).get('chinese_name', {})
-
-# 加载模型
-if not os.path.exists(weights_path):
-    print(f"[WARN] Weight file {weights_path} not found")
-    # 兜底权重 yolov8s.pt 已在 2026-10-08 清理时删除；
-    # 当前 config/configs.yaml 指向的 best.pt 存在，正常不会走到这里。
-    weights_path = 'yolov8s.pt'
-    print(f"[WARN] Falling back to {weights_path} (not present locally; ultralytics will try to download it)")
-
-print(f"[INFO] Loading model: {weights_path}")
-print(f"[INFO] Device: {device}")
-yolo_model = YOLO(weights_path)
-# 预热
-yolo_model.predict(np.zeros((300, 300, 3), dtype=np.uint8), device=device)
-print(f"[INFO] Model loaded. Classes: {len(yolo_model.names)}")
-print(f"[INFO] Classes: {list(yolo_model.names.values())}")
-
-# ==================== 信号反馈 & 喷淋执行（国赛形态C 物理闭环） ====================
-from feedback.feedback import Feedback
-from feedback.spray import SprayController
-
-cfg_feedback = config.get('FEEDBACK', {}) or {}
-feedback = Feedback(
-    serial_port=cfg_feedback.get('serial_port') or None,
-    baud=int(cfg_feedback.get('baud', 9600)),
-    enabled=bool(cfg_feedback.get('enabled', True)),
-    speak_interval=float(cfg_feedback.get('speak_interval', 3)),
-)
-
-cfg_spray = config.get('SPRAY', {}) or {}
-spray = SprayController(
-    serial_port=cfg_spray.get('serial_port') or None,
-    baud=int(cfg_spray.get('baud', 115200)),
-    enabled=bool(cfg_spray.get('enabled', True)),
-    risk_map=cfg_spray.get('risk_map', {}) or {},
-    min_interval=float(cfg_spray.get('min_interval', 3)),
-    transport=cfg_spray.get('transport', 'serial'),
-    http_targets=cfg_spray.get('http_targets', []) or [],
-    http_timeout=float(cfg_spray.get('http_timeout', 1.0) or 1.0),
-    mqtt=cfg_spray.get('mqtt', {}) or {},
-)
-print(f"[INFO] Spray transport={spray.transport} available={spray.available}")
-
-# ==================== 摄像头源解析（多路片区方案 + 单摄回退） ====================
-cfg_cameras = config.get('CONFIG', {}).get('cameras') or []
-camera_num = int(config.get('CONFIG', {}).get('camera_num', 0))
-
-
-def _normalize_source(src):
-    """规范化摄像头 source：纯数字串转 int，其余按路径/RTSP URL 处理。"""
-    if isinstance(src, str):
-        s = src.strip()
-        return int(s) if s.isdigit() else s
-    return src
-
-
-def resolve_camera(cam_id=None):
-    """解析摄像头源，返回 (source, group, label)。
-
-    - 配了 CONFIG.cameras 时：按 id 匹配（如 'A'/'B'）；未命中则取第一路
-    - 未配 cameras 时：回退单摄 camera_num，group/label 为空
-    """
-    if cfg_cameras:
-        chosen = None
-        if cam_id:
-            target = str(cam_id).strip().lower()
-            for c in cfg_cameras:
-                if str(c.get('id', '')).strip().lower() == target:
-                    chosen = c
-                    break
-        if chosen is None:
-            chosen = cfg_cameras[0]
-        return (
-            _normalize_source(chosen.get('source', 0)),
-            str(chosen.get('group', '') or ''),
-            str(chosen.get('name') or chosen.get('id') or ''),
-        )
-    return camera_num, '', ''
-
-# 联动/喷淋历史（Client 页「历史回看」用，内存环形缓存）
-spray_history = []
-
-
-def _record_history(risk_level, detections, group=None, duration=None, source='auto'):
-    """记录一条联动/喷淋历史。"""
-    names = []
-    for d in (detections or []):
-        n = d.get('chinese_name') or d.get('class_name') if isinstance(d, dict) else str(d)
-        if n:
-            names.append(str(n))
-    spray_history.append({
-        'ts': datetime.now().strftime('%H:%M:%S'),
-        'source': source,
-        'risk': risk_level,
-        'group': group,
-        'duration': duration,
-        'detections': names[:8],
-    })
-    if len(spray_history) > 50:
-        del spray_history[:len(spray_history) - 50]
-
-
-def _predict_and_format(img, conf=None):
-    """检测 + 风险评估 + 结果图，返回统一 JSON 结构（供 REST 与 WebSocket 复用）。"""
-    if conf is None:
-        conf = conf_thres
-    t_start = time.time()
-    results = yolo_model.predict(img, imgsz=imgsz, conf=conf, device=device)
-    formatted = format_data(results)
-    inference_time = round(time.time() - t_start, 3)
-
-    risk_level, risk_color, risk_detail = assess_risk(formatted, img.shape[:2])
-
-    result_img = draw_info(img.copy(), formatted)
-    _, buffer = cv2.imencode('.jpg', result_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    result_b64 = base64.b64encode(buffer).decode('utf-8')
-
-    detections = []
-    for r in formatted:
-        cls_name = r[0]
-        cn_name = chinese_name.get(cls_name, cls_name)
-        detections.append({
-            "class_name": cls_name,
-            "chinese_name": cn_name,
-            "confidence": round(r[1], 4),
-            "bbox": [round(x, 1) for x in r[2]],
-        })
-
-    return {
-        "success": True,
-        "count": len(detections),
-        "detections": detections,
-        "risk": {"level": risk_level, "detail": risk_detail},
-        "inference_time": inference_time,
-        "result_image": result_b64,
-        "timestamp": datetime.now().isoformat(),
-    }
-
-
-def _kb_advice_from_result(res):
-    """用检测结果拼知识库防治报告（秒回、离线、无网络依赖）。"""
-    pests = [
-        (d.get("class_name") or d.get("chinese_name"), float(d.get("confidence") or 0))
-        for d in (res.get("detections") or [])
-    ]
-    risk = res.get("risk") or {}
-    return knowledge_base.get_advice(pests, risk.get("level", ""), risk.get("detail", ""))
-
-
-def _with_advice(res):
-    """给检测结果挂上知识库版防治建议（失败静默，不影响检测本身）。
-
-    注意：只挂在 /api/detect 与 /api/detect_b64 上，
-    WebSocket 实时流那条路**不能挂**（每帧生成建议会拖垮推理）。
-    """
-    try:
-        res["advice"] = _kb_advice_from_result(res)
-        res["advice_source"] = "knowledge_base"
-    except Exception:
-        res["advice"] = ""
-        res["advice_source"] = "none"
-    return res
-
-
-def _linkage(risk_level, detections, zone_group=None):
-    """风险联动：语音播报 + 喷淋执行（均异步、失败静默、不阻塞推理）。
-
-    zone_group: 触发该风险的片区对应分组（多路定点监测时由摄像头绑定）；
-                None 时用 risk_map 配置的分组。
-    返回是否已下发喷淋指令，用于历史记录。
-    """
-    names = [d.get('chinese_name') or d.get('class_name') for d in detections]
-    try:
-        feedback.trigger(risk_level, names, '')
-    except Exception:
-        pass
-
-    mapping = cfg_spray.get('risk_map', {}).get(risk_level, {}) if cfg_spray.get('risk_map') else {}
-    group = mapping.get('group')
-    duration = mapping.get('duration', 0)
-
-    # 片区定向：摄像头绑定了分组、且映射不是"全体"时，只喷该片区
-    spray_group = zone_group if (zone_group and group and group != 'all') else group
-
-    sprayed = False
-    if risk_level in ('高风险', '中风险'):
-        try:
-            sprayed = spray.spray(risk_level, names, group_override=spray_group)
-        except Exception:
-            sprayed = False
-    if sprayed:
-        _record_history(risk_level, detections, group=spray_group, duration=duration, source='auto')
-    return sprayed
+# 问答网关（RAG + 防幻觉）：GUI 聊天 / 网页 / 手机端共用这一个入口
+from llm import ai_gateway
+# 页面渲染
+from serve import mobile as mobile_page
+from serve import pages as static_pages
 
 # ==================== FastAPI App ====================
 app = FastAPI(
@@ -255,364 +64,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# ==================== HTML 演示页面 ====================
-HTML_PAGE = """
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CropGuard - 农作物害虫智能检测系统</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            background: linear-gradient(135deg, #1a3a1a 0%, #2d5a2d 50%, #1a3a1a 100%);
-            min-height: 100vh;
-            color: #333;
-        }
-        .header {
-            background: rgba(48,77,49,0.95);
-            color: white;
-            padding: 20px;
-            text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
-        }
-        .header h1 { font-size: 24px; margin-bottom: 5px; }
-        .header p { font-size: 14px; opacity: 0.85; }
-        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
-        .upload-section {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-        }
-        .upload-area {
-            border: 2px dashed #ccc;
-            border-radius: 10px;
-            padding: 40px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin-bottom: 20px;
-        }
-        .upload-area:hover, .upload-area.dragover {
-            border-color: #2d5a2d;
-            background: rgba(45,90,45,0.05);
-        }
-        .upload-area input { display: none; }
-        .upload-icon { font-size: 48px; margin-bottom: 10px; }
-        .btn {
-            background: rgb(48,77,49);
-            color: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 25px;
-            font-size: 16px;
-            cursor: pointer;
-            transition: all 0.3s;
-            display: inline-block;
-            text-decoration: none;
-        }
-        .btn:hover { background: rgb(60,95,60); transform: translateY(-1px); }
-        .btn:disabled { background: #999; cursor: not-allowed; }
-        .result-section {
-            background: white;
-            border-radius: 15px;
-            padding: 30px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-            display: none;
-        }
-        .result-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-top: 20px;
-        }
-        @media (max-width: 768px) { .result-grid { grid-template-columns: 1fr; } }
-        .result-image {
-            border-radius: 10px;
-            overflow: hidden;
-            border: 1px solid #eee;
-        }
-        .result-image img { width: 100%; height: auto; display: block; }
-        .result-info {
-            padding: 20px;
-            background: #f9f9f9;
-            border-radius: 10px;
-        }
-        .detection-item {
-            padding: 12px;
-            margin: 8px 0;
-            background: white;
-            border-radius: 8px;
-            border-left: 4px solid #2d5a2d;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        .detection-item .name { font-weight: bold; font-size: 16px; }
-        .detection-item .conf { color: #666; font-size: 14px; }
-        .risk-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-weight: bold;
-            font-size: 14px;
-            margin: 10px 0;
-        }
-        .risk-high { background: #ffe0e0; color: #c00; }
-        .risk-medium { background: #fff3e0; color: #e65100; }
-        .risk-low { background: #e8f5e9; color: #2e7d32; }
-        .risk-none { background: #e8f5e9; color: #2e7d32; }
-        .loading { text-align: center; padding: 40px; display: none; }
-        .loading .spinner {
-            border: 3px solid #f3f3f3;
-            border-top: 3px solid #2d5a2d;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-        }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .api-section {
-            background: white;
-            border-radius: 15px;
-            padding: 20px 30px;
-            margin-top: 20px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-        }
-        .api-section code {
-            background: #f5f5f5;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            font-size: 13px;
-        }
-        .preview-img {
-            max-width: 200px;
-            max-height: 150px;
-            border-radius: 8px;
-            margin-top: 10px;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>🌿 CropGuard - 农作物害虫智能检测系统</h1>
-        <p>基于 YOLOv8 + SE注意力机制 | 27类农业害虫识别 | AI防治建议</p>
-    </div>
-
-    <div class="container">
-        <div class="upload-section">
-            <h2 style="margin-bottom:15px;">📤 上传图片进行检测</h2>
-            <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
-                <div class="upload-icon">🖼️</div>
-                <p>点击或拖拽图片到此处</p>
-                <p style="color:#999;font-size:12px;margin-top:5px;">支持 JPG, PNG, JFIF 格式</p>
-                <input type="file" id="fileInput" accept="image/*" onchange="handleFileSelect(event)">
-            </div>
-            <!-- 手机端"直接拍照"入口：capture=environment 会调起后置摄像头，
-                 注意 <input capture> 不需要 HTTPS，而 getUserMedia 需要 -->
-            <input type="file" id="cameraInput" accept="image/*" capture="environment"
-                   style="display:none" onchange="handleFileSelect(event)">
-            <div style="margin-top:12px;">
-                <button class="btn" id="cameraBtn"
-                        onclick="document.getElementById('cameraInput').click()"
-                        style="background:#2d5a2d;">📷 手机拍照</button>
-                <span style="margin-left:10px;color:#888;font-size:12px;">（手机点这个直接开相机）</span>
-            </div>
-            <img id="preview" class="preview-img" style="display:none;">
-            <div style="margin-top:15px;">
-                <button class="btn" id="detectBtn" onclick="detectPests()" disabled>🔍 开始检测</button>
-                <label style="margin-left:15px;font-size:14px;">
-                    置信度阈值: <input type="range" id="confThreshold" min="0.1" max="0.9" step="0.05" value="0.4" style="vertical-align:middle;">
-                    <span id="confValue">0.4</span>
-                </label>
-            </div>
-        </div>
-
-        <div class="loading" id="loading">
-            <div class="spinner"></div>
-            <p>正在检测中，请稍候...</p>
-        </div>
-
-        <div class="result-section" id="resultSection">
-            <h2>📊 检测结果</h2>
-            <div id="riskInfo"></div>
-            <div class="result-grid">
-                <div class="result-image">
-                    <h3 style="margin-bottom:10px;">检测可视化</h3>
-                    <img id="resultImage" alt="检测结果">
-                </div>
-                <div class="result-info">
-                    <h3 style="margin-bottom:10px;">检测详情</h3>
-                    <div id="detectionList"></div>
-                    <div id="stats" style="margin-top:15px;color:#666;font-size:14px;"></div>
-                </div>
-            </div>
-            <div style="margin-top:18px;">
-                <h3 style="margin-bottom:8px;">🧪 防治建议</h3>
-                <div id="adviceBox"
-                     style="padding:14px 16px;background:#f6faf6;border-left:4px solid #2d5a2d;
-                            border-radius:8px;white-space:pre-wrap;font-size:14px;
-                            line-height:1.75;color:#26402a;">（检测后自动生成）</div>
-                <div id="adviceSource" style="margin-top:6px;color:#888;font-size:12px;"></div>
-            </div>
-        </div>
-
-        <div class="api-section">
-            <h3>📡 API 接口</h3>
-            <p style="margin-top:10px;">除了本页面，您也可以直接调用 REST API:</p>
-            <p style="margin:8px 0;"><a href="/stream" style="color:#2d5a2d;font-weight:bold;">📱 打开移动端实时监测页 /stream</a>（实时画面 + 喷淋联动）</p>
-            <p style="margin:8px 0;"><code>POST /api/detect</code> - 上传图片检测 (multipart/form-data, field: <code>file</code>)</p>
-            <p style="margin:8px 0;"><code>POST /api/detect_b64</code> - Base64图片检测 (JSON: <code>{"image": "base64..."}</code>)</p>
-            <p style="margin:8px 0;"><code>POST /api/spray</code> - 手动喷淋 (JSON: <code>{"group":"all","duration":2}</code>)</p>
-            <p style="margin:8px 0;"><code>GET /api/history</code> - 联动/喷淋历史</p>
-            <p style="margin:8px 0;"><code>WS /ws/stream</code> - 摄像头实时流</p>
-            <p style="margin:8px 0;"><code>GET /api/health</code> - 健康检查</p>
-            <p style="margin:8px 0;"><code>GET /api/info</code> - 模型信息</p>
-        </div>
-    </div>
-
-    <script>
-        let selectedFile = null;
-
-        // 拖拽上传
-        const uploadArea = document.getElementById('uploadArea');
-        uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
-        uploadArea.addEventListener('dragleave', () => { uploadArea.classList.remove('dragover'); });
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            const file = e.dataTransfer.files[0];
-            if (file && file.type.startsWith('image/')) {
-                selectedFile = file;
-                showPreview(file);
-            }
-        });
-
-        // 置信度滑块
-        document.getElementById('confThreshold').addEventListener('input', function() {
-            document.getElementById('confValue').textContent = this.value;
-        });
-
-        function handleFileSelect(event) {
-            const file = event.target.files[0];
-            if (file) { selectedFile = file; showPreview(file); }
-        }
-
-        function showPreview(file) {
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const preview = document.getElementById('preview');
-                preview.src = e.target.result;
-                preview.style.display = 'block';
-            };
-            reader.readAsDataURL(file);
-            document.getElementById('detectBtn').disabled = false;
-        }
-
-        async function detectPests() {
-            if (!selectedFile) return;
-
-            const loading = document.getElementById('loading');
-            const resultSection = document.getElementById('resultSection');
-            const detectBtn = document.getElementById('detectBtn');
-            const conf = document.getElementById('confThreshold').value;
-
-            loading.style.display = 'block';
-            resultSection.style.display = 'none';
-            detectBtn.disabled = true;
-
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-            formData.append('conf', conf);
-
-            try {
-                const resp = await fetch('/api/detect', { method: 'POST', body: formData });
-                const data = await resp.json();
-
-                if (data.success) {
-                    // 显示结果图
-                    document.getElementById('resultImage').src = 'data:image/jpeg;base64,' + data.result_image;
-
-                    // 显示风险等级
-                    const risk = data.risk;
-                    let riskClass = 'risk-none';
-                    if (risk.level === '高风险') riskClass = 'risk-high';
-                    else if (risk.level === '中风险') riskClass = 'risk-medium';
-                    else if (risk.level === '低风险') riskClass = 'risk-low';
-                    document.getElementById('riskInfo').innerHTML =
-                        `<div style="margin:10px 0;">
-                            <span class="risk-badge ${riskClass}">${risk.level}</span>
-                            <span style="margin-left:10px;">${risk.detail}</span>
-                        </div>`;
-
-                    // 显示检测列表
-                    const list = document.getElementById('detectionList');
-                    if (data.detections.length === 0) {
-                        list.innerHTML = '<p style="color:#999;">未检测到害虫目标</p>';
-                    } else {
-                        list.innerHTML = data.detections.map((d, i) =>
-                            `<div class="detection-item">
-                                <div class="name">${d.chinese_name || d.class_name}</div>
-                                <div class="conf">置信度: ${(d.confidence*100).toFixed(1)}% | 位置: [${d.bbox.map(Math.round).join(', ')}]</div>
-                            </div>`
-                        ).join('');
-                    }
-
-                    // 显示统计
-                    document.getElementById('stats').innerHTML =
-                        `检测耗时: ${data.inference_time}s | 检测到 ${data.count} 个目标`;
-
-                    // 防治建议：先用接口返回的知识库版（秒出），再异步换成本地大模型综合方案
-                    const adviceBox = document.getElementById('adviceBox');
-                    const adviceSrc = document.getElementById('adviceSource');
-                    adviceBox.textContent = data.advice || '（无建议）';
-                    adviceSrc.textContent = '来源：知识库（离线兜底）';
-                    if (data.detections.length > 0) {
-                        adviceSrc.textContent = '来源：知识库（离线兜底）· 正在调用本地大模型生成综合方案…';
-                        fetch('/api/advice', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({detections: data.detections, risk: data.risk})
-                        })
-                        .then(r => r.json())
-                        .then(a => {
-                            if (a && a.advice) {
-                                adviceBox.textContent = a.advice;
-                                adviceSrc.textContent = (a.source === 'llm')
-                                    ? '来源：本地大模型（Ollama，离线），可与知识库版对照'
-                                    : '来源：知识库（离线兜底）';
-                            }
-                        })
-                        .catch(() => {
-                            adviceSrc.textContent = '来源：知识库（离线兜底）· 大模型调用失败，已兜底';
-                        });
-                    }
-
-                    resultSection.style.display = 'block';
-                } else {
-                    alert('检测失败: ' + data.error);
-                }
-            } catch (err) {
-                alert('请求失败: ' + err.message);
-            } finally {
-                loading.style.display = 'none';
-                detectBtn.disabled = false;
-            }
-        }
-    </script>
-</body>
-</html>
-"""
-
-
 @app.get("/", response_class=HTMLResponse)
 async def index():
     """Web演示页面"""
-    return HTML_PAGE
+    return static_pages.load('index')
 
 
 @app.get("/api/health")
@@ -630,6 +85,7 @@ async def health():
 @app.get("/api/info")
 async def info():
     """模型信息"""
+    chinese_name = config.get('CONFIG', {}).get('chinese_name', {})
     return {
         "model": weights_path,
         "device": device,
@@ -709,248 +165,251 @@ async def detect_base64(payload: dict):
         )
 
 
-# ==================== 移动端实时监测页（C/S Client） ====================
-STREAM_PAGE = """
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>农智云 · 实时监测</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            background: #0f1a0f;
-            color: #e8f5e9;
-            min-height: 100vh;
-            padding-bottom: env(safe-area-inset-bottom);
-        }
-        .header {
-            background: rgba(48,77,49,0.95);
-            padding: 12px 16px;
-            text-align: center;
-            position: sticky; top: 0; z-index: 10;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-        }
-        .header h1 { font-size: 18px; }
-        .header .status { font-size: 12px; opacity: 0.85; margin-top: 2px; }
-        .status .dot { display:inline-block; width:8px; height:8px; border-radius:50%;
-            background:#f44336; margin-right:5px; }
-        .status.online .dot { background:#4caf50; }
-        .video-wrap {
-            margin: 12px; border-radius: 14px; overflow: hidden;
-            background: #000; position: relative; aspect-ratio: 4/3;
-        }
-        .video-wrap img { width: 100%; height: 100%; object-fit: contain; display:block; }
-        .risk-bar {
-            margin: 0 12px; padding: 10px 14px; border-radius: 10px;
-            background: #1e2a1e; font-weight: bold; font-size: 15px;
-        }
-        .risk-bar.high { background: #4a1515; color: #ff8a80; }
-        .risk-bar.medium { background: #4a2f12; color: #ffcc80; }
-        .risk-bar.low { background: #14341a; color: #a5d6a7; }
-        .risk-bar.none { background: #14341a; color: #a5d6a7; }
-        .panel {
-            margin: 12px; padding: 14px; border-radius: 14px; background: #1e2a1e;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        }
-        .panel h3 { font-size: 14px; margin-bottom: 10px; color: #a5d6a7; }
-        .spray-btns { display: flex; gap: 10px; flex-wrap: wrap; }
-        .spray-btns button {
-            flex: 1; min-width: 80px; padding: 12px 8px; border: none; border-radius: 10px;
-            font-size: 15px; font-weight: bold; cursor: pointer; color: #fff;
-            background: rgb(48,77,49); transition: transform 0.1s;
-        }
-        .spray-btns button:active { transform: scale(0.96); }
-        .spray-btns button.warn { background: #b3541e; }
-        .spray-btns button.all { background: #a31d1d; }
-        .det-item {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 8px 10px; margin: 6px 0; background: #142014;
-            border-radius: 8px; border-left: 3px solid #4caf50; font-size: 14px;
-        }
-        .det-item .conf { color: #9e9e9e; font-size: 12px; }
-        .hist-item {
-            padding: 8px 10px; margin: 6px 0; background: #142014;
-            border-radius: 8px; font-size: 12px; line-height: 1.5;
-        }
-        .hist-item .tag {
-            display:inline-block; padding: 1px 8px; border-radius: 8px; font-weight: bold;
-            margin-right: 6px; color:#fff;
-        }
-        .tag.high { background:#a31d1d; } .tag.medium { background:#b3541e; }
-        .tag.low { background:#2e7d32; } .tag.manual { background:#455a64; }
-        .empty { color: #6b7a6b; text-align:center; padding: 10px; font-size: 13px; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <h1>🌿 农智云 · 实时监测终端</h1>
-        <div class="status" id="status"><span class="dot"></span>连接中...</div>
-    </div>
-
-    <div class="video-wrap"><img id="stream" alt="实时画面"></div>
-
-    <div class="risk-bar none" id="riskBar">风险等级：无风险</div>
-
-    <div class="panel">
-        <h3>💦 手动喷淋</h3>
-        <div class="spray-btns">
-            <button class="all" onclick="spray('all', 3)">全体喷</button>
-            <button class="warn" onclick="spray('g1', 2)">G1 组喷</button>
-            <button onclick="spray('g2', 1)">G2 组喷</button>
-        </div>
-    </div>
-
-    <div class="panel">
-        <h3>🐛 当前检测</h3>
-        <div id="detList"><div class="empty">等待检测结果...</div></div>
-    </div>
-
-    <div class="panel">
-        <h3>🕘 联动/喷淋历史</h3>
-        <div id="histList"><div class="empty">暂无记录</div></div>
-    </div>
-
-    <script>
-        var ws = null;
-        var statusEl = document.getElementById('status');
-
-        function setStatus(online, text) {
-            statusEl.className = 'status' + (online ? ' online' : '');
-            statusEl.innerHTML = '<span class="dot"></span>' + text;
-        }
-
-        function connect() {
-            var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-            ws = new WebSocket(proto + location.host + '/ws/stream');
-            ws.onopen = function() { setStatus(true, '已连接 · 实时监测中'); };
-            ws.onmessage = function(ev) {
-                var data = JSON.parse(ev.data);
-                if (data.error) { setStatus(false, data.error); return; }
-                if (data.result_image) {
-                    document.getElementById('stream').src = 'data:image/jpeg;base64,' + data.result_image;
-                }
-                renderRisk(data.risk);
-                renderDetections(data.detections);
-            };
-            ws.onclose = function() { setStatus(false, '已断开，重连中...'); setTimeout(connect, 2000); };
-            ws.onerror = function() { ws.close(); };
-        }
-
-        function renderRisk(risk) {
-            var level = risk && risk.level ? risk.level : '无风险';
-            var bar = document.getElementById('riskBar');
-            bar.className = 'risk-bar ' + clsOfRisk(level);
-            bar.textContent = '风险等级：' + level + (risk && risk.detail ? '（' + risk.detail + '）' : '');
-        }
-
-        function clsOfRisk(level) {
-            if (level === '高风险') return 'high';
-            if (level === '中风险') return 'medium';
-            if (level === '低风险') return 'low';
-            return 'none';
-        }
-
-        function renderDetections(list) {
-            var el = document.getElementById('detList');
-            if (!list || list.length === 0) { el.innerHTML = '<div class="empty">未检测到害虫目标</div>'; return; }
-            el.innerHTML = list.map(function(d) {
-                var name = d.chinese_name || d.class_name;
-                var conf = (d.confidence * 100).toFixed(1) + '%';
-                return '<div class="det-item"><span>' + name + '</span><span class="conf">' + conf + '</span></div>';
-            }).join('');
-        }
-
-        async function spray(group, duration) {
-            try {
-                var resp = await fetch('/api/spray', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({group: group, duration: duration})
-                });
-                var data = await resp.json();
-                if (data.success) { refreshHistory(); }
-                else { alert('喷淋未下发：网关未连接'); }
-            } catch (e) { alert('请求失败: ' + e.message); }
-        }
-
-        async function refreshHistory() {
-            try {
-                var resp = await fetch('/api/history');
-                var data = await resp.json();
-                var list = data.history || [];
-                var el = document.getElementById('histList');
-                if (list.length === 0) { el.innerHTML = '<div class="empty">暂无记录</div>'; return; }
-                el.innerHTML = list.slice().reverse().map(function(h) {
-                    var tag = h.source === 'manual' ? 'manual' : clsOfRisk(h.risk);
-                    var label = h.source === 'manual' ? '手动' : h.risk;
-                    var det = (h.detections && h.detections.length) ? h.detections.join('、') : '';
-                    var act = h.group ? ' → ' + (h.group === 'all' ? '全体' : h.group) + '喷 ' + h.duration + 's' : '';
-                    return '<div class="hist-item"><span class="tag ' + tag + '">' + label + '</span>' +
-                        '<span>' + h.ts + '</span>' + act + '<br>' + det + '</div>';
-                }).join('');
-            } catch (e) {}
-        }
-
-        connect();
-        refreshHistory();
-        setInterval(refreshHistory, 2000);
-    </script>
-</body>
-</html>
-"""
-
-
 @app.post("/api/advice")
 def advice(payload: dict):
-    """防治建议：知识库秒回 + 本地大模型综合方案（离线 Ollama，与 GUI 同一套）。
+    """防治建议：统一走 RAG + 本地 Ollama（与 /api/ask、GUI 聊天同一入口）。
 
     body: {"detections": [...], "risk": {"level": "...", "detail": "..."}}
-    返回: {"success", "source": "knowledge_base"|"llm", "advice": "文本"}
+    返回: {"success", "source": "llm"|"knowledge_base"|"refused", "advice": "文本", ...}
 
     故意用普通 def（不是 async def）：FastAPI 会把它丢进线程池，
     避免本地大模型那几秒阻塞事件循环、把推理接口一起拖慢。
     """
     dets = payload.get("detections") or []
     risk = payload.get("risk") or {}
-    pests = [
-        (d.get("class_name") or d.get("chinese_name"), float(d.get("confidence") or 0))
+    if not dets:
+        return {
+            "success": True,
+            "source": "knowledge_base",
+            "advice": knowledge_base.NO_PEST_MSG,
+        }
+    names = "、".join(
+        f"{d.get('chinese_name') or d.get('class_name')}"
+        f"(置信度:{float(d.get('confidence') or 0):.2f})"
         for d in dets
-    ]
-    result = {
-        "success": True,
-        "source": "knowledge_base",
-        "advice": knowledge_base.get_advice(pests, risk.get("level", ""), risk.get("detail", "")),
-    }
-    if local_llm is None or not dets:
-        return result
+    )
+    question = f"检测到 {names}，风险等级 {risk.get('level', '')}，请给出防治建议。"
     try:
-        names = "、".join(
-            f"{d.get('chinese_name') or d.get('class_name')}"
-            f"(置信度:{float(d.get('confidence') or 0):.2f})"
-            for d in dets
-        )
-        risk_info = f"\n病害风险等级：{risk.get('level', '')}\n风险详情：{risk.get('detail', '')}"
-        user_prompt = (
-            f"检测到的病虫害：{names}{risk_info}\n\n"
-            f"请生成简洁的诊断结论与综合防治要点（300字以内），"
-            f"分点列出农业、物理、生物、化学防治措施。"
-        )
-        text = local_llm.generate(prompt_manager.get_prompt('deepseek'), user_prompt)
-        if text and str(text).strip():
-            result["source"] = "llm"
-            result["advice"] = str(text).strip()
+        res = ai_gateway.answer(question, context=payload)
     except Exception as exc:
-        result["llm_error"] = f"{type(exc).__name__}: {str(exc)[:100]}"
-    return result
+        traceback.print_exc()
+        return {
+            "success": False,
+            "source": "error",
+            "advice": f"建议生成失败：{type(exc).__name__}: {str(exc)[:160]}",
+        }
+    # 保持旧字段 advice 兼容
+    res["advice"] = res.pop("answer", "")
+    return res
 
 
 @app.get("/stream", response_class=HTMLResponse)
 async def stream_page():
-    """移动端实时监测页（C/S Client）。"""
-    return STREAM_PAGE
+    """移动端实时监测页（C/S Client，保留兼容）。"""
+    return static_pages.load('stream')
+
+
+# ==================== 手机端页面 /m ====================
+_cfg_phone = config.get('PHONE', {}) or {}
+# 真实监听端口（由 __main__ 里用 --port/--https-port 写入），
+# 供 /m 页面与 /qr 生成正确的手机访问地址
+_srv_ports = {'http': None, 'https': None}
+
+
+def _lan_ips():
+    """列出本机局域网 IPv4（手机要用它访问服务器，现场直接打印出来）。"""
+    ips = []
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 80))          # 不会真的发包，只为拿到默认出口网卡
+            ips.append(s.getsockname()[0])
+        except Exception:
+            pass
+        finally:
+            s.close()
+    except Exception:
+        pass
+    try:
+        import socket
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ip = info[4][0]
+            if ip and not ip.startswith('127.') and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _phone_ports(request_host_port=None):
+    """返回 (http_port, https_port)。
+
+    HTTP 端口优先取"真实运行端口"（`--port` 指定的那个），
+    其次才用请求头里的端口 —— 这样用 `--port 8090` 启动时，
+    手机页里内嵌的接口地址会自动跟着变成 8090（否则页面调接口会连错端口）。
+    """
+    https_port = int(_srv_ports.get('https') or _cfg_phone.get('https_port', 8443) or 8443)
+    http_port = int(_srv_ports.get('http') or 0) or 8080
+    if request_host_port:
+        try:
+            http_port = int(str(request_host_port).split(':')[-1])
+        except Exception:
+            pass
+    return http_port, https_port
+
+
+@app.get("/api/lan")
+async def lan_info(request=None):
+    """给 PC 首页/手机页用：本机可被手机访问的地址清单。"""
+    ips = _lan_ips()
+    ports = _phone_ports()
+    return {
+        "success": True,
+        "hosts": ips,
+        "http_port": ports[0],
+        "https_port": ports[1],
+        "phone_urls": [f"http://{ip}:{ports[0]}/m" for ip in ips],
+        "phone_urls_https": [f"https://{ip}:{ports[1]}/m" for ip in ips],
+    }
+
+
+@app.get("/qr")
+async def qr_image(url: str = None, size: int = 6):
+    """把网址渲染成二维码 PNG（纯 PIL 手写实现，见 tool/qr_min.py）。
+
+    现场用法：PC 首页把手机入口的二维码显示出来，手机一扫就进 /m，不用手输 IP。
+    """
+    url = url or f"http://{( _lan_ips() or ['127.0.0.1'])[0]}:{_phone_ports()[0]}/m"
+    try:
+        from io import BytesIO
+        from tool.qr_min import to_pil
+        img = to_pil(url, box_size=int(size or 6), border=3)
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        return Response(content=buf.getvalue(), media_type='image/png')
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f'二维码生成失败: {exc}')
+
+
+@app.get("/m", response_class=HTMLResponse)
+async def mobile_home(request: Request):
+    """手机会话页：拍照识别 / 实时识别 / 问答 / 喷洒控制。"""
+    host = (request.url.hostname or '')
+    http_port, https_port = _phone_ports(request.url.port)
+    html = mobile_page.render(
+        host=host, http_port=http_port, https_port=https_port,
+        frame_interval_ms=int(_cfg_phone.get('frame_interval_ms', 400) or 400),
+        upload_max_side=int(_cfg_phone.get('upload_max_side', 960) or 960),
+    )
+    return HTMLResponse(html)
+
+
+# ==================== 本地大模型问答（RAG + 防幻觉） ====================
+_chat_cfg = config.get('CHAT', {}) or {}
+_rag_cfg = config.get('RAG', {}) or {}
+
+
+@app.post("/api/ask")
+def ask(payload: dict):
+    """自由提问（网页 / 手机 / GUI 同一个网关）。
+
+    body:
+      {"question": "...",
+       "history": [{"role":"user|assistant","content":"..."}],   # 可选
+       "context": {"detections": [...], "risk": {...}}}          # 可选；缺省用最近一次检测
+
+    返回：{"success","answer","source":"llm|knowledge_base|refused",
+           "citations":[...],"engine","elapsed","guard":{...}}
+
+    这里刻意用**普通 def**（不是 async def）：FastAPI 会丢进线程池执行，
+    本地 7B 一次要几秒到几十秒，不能阻塞事件循环去拖慢推理与推流。
+    """
+    question = (payload.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="缺少 'question' 字段")
+    history = payload.get("history") or []
+    context = payload.get("context") or None
+    if context is None and _last_result.get("result"):
+        # 没显式给上下文时，用最近一次检测结果，做到"结合当前虫情回答"
+        context = _last_result["result"]
+    try:
+        return ai_gateway.answer(question, history=history, context=context)
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={
+            "success": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+            "source": "error", "answer": "问答服务异常，请稍后重试。",
+        })
+
+
+@app.get("/api/kb/search")
+def kb_search(q: str, top_k: int = None):
+    """只做检索（不调用大模型）：现场展示 RAG 召回与分数用。"""
+    try:
+        r = ai_gateway.get_retriever()
+        chunks = r.search(q or '', top_k=int(top_k or _rag_cfg.get('top_k', 4)))
+        return {
+            "success": True,
+            "question": q,
+            "rewritten": r.rewrite(q or '')[0],
+            "detected_pests": r.detect_pests(q or ''),
+            "refuse_below": float(_chat_cfg.get('refuse_below', 0.18)),
+            "will_refuse": (not chunks) or chunks[0]['score'] < float(_chat_cfg.get('refuse_below', 0.18)),
+            "chunks": [{"id": c['id'], "title": c['title'], "type": c['type'],
+                        "cn": c['cn'], "score": c['score'], "text": c['text'],
+                        "source": c.get('source', '')} for c in chunks],
+            "stats": r.stats(),
+        }
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@app.post("/api/ask_command")
+async def ask_command(payload: dict):
+    """自然语言 → 喷洒意图（**默认只解析不执行**，需人工确认）。
+
+    body: {"text": "给片区A喷3秒", "execute": false}
+      * execute=false（默认）：只返回解析结果，前端弹确认按钮；
+      * execute=true：确认后真正下发（等价于 /api/spray），并写历史。
+
+    安全要点：大模型的自由文本永远不能直接驱动硬件；
+    分组必须在白名单内、时长必须被钳制（SPRAY.max_duration）。
+    """
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="缺少 'text' 字段")
+    max_duration = int((cfg_spray.get('max_duration') or 5))
+    parsed = ai_gateway.parse_command(text, max_duration=max_duration)
+
+    allowed_groups = set(spray.http_targets.keys()) | {'all'}
+    if parsed.get('group') and parsed['group'] not in allowed_groups:
+        parsed.update(valid=False, reason=f'分组 {parsed["group"]} 不在白名单',
+                      reply='该片区未配置喷洒节点，无法执行。')
+
+    executed = False
+    if bool(payload.get("execute")) and parsed.get('valid') and parsed.get('group'):
+        if parsed.get('intent') == 'stop':
+            executed = spray.stop(parsed['group'])
+        else:
+            executed = spray.manual_spray(parsed['group'], parsed['duration'])
+        if executed:
+            _record_history('语音指令喷洒', [], group=parsed['group'],
+                            duration=parsed.get('duration') or 0,
+                            source='phone-chat')
+    parsed.update(executed=bool(executed), available=bool(spray.available))
+    return {"success": True, **parsed}
+
+
+@app.get("/api/feedback/status")
+async def feedback_status():
+    """语音/串口反馈状态：现场排查"到底响不响"用。"""
+    try:
+        return {"success": True, "feedback": feedback.status()}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 @app.get("/api/history")
@@ -961,76 +420,232 @@ async def history():
 
 @app.post("/api/spray")
 async def manual_spray(payload: dict):
-    """手动喷淋端点（Client 按钮）。
+    """手动喷淋端点（Client 按钮 / 语音指令确认后）。
 
-    body: {"group": "all"|"g1"|"g2", "duration": 秒}
+    body: {"group": "all"|"g1"|"g2", "duration": 秒, "via": "web|phone|chat"}
     """
     group = payload.get("group", "all")
+    via = str(payload.get("via") or "manual")
+    max_duration = int(cfg_spray.get('max_duration', 5) or 5)
     try:
         duration = int(payload.get("duration", 2))
     except (TypeError, ValueError):
         duration = 2
+    if duration > max_duration:
+        duration = max_duration
+    if duration <= 0:
+        duration = 2
     ok = spray.manual_spray(group, duration)
-    _record_history('手动喷淋', [], group=group, duration=duration, source='manual')
+    _record_history('手动喷淋', [], group=group, duration=duration, source='manual', via=via)
     return {
         "success": ok,
         "gateway_available": spray.available,
         "group": group,
         "duration": duration,
+        "max_duration": max_duration,
     }
+
+
+@app.get("/api/camera/health")
+async def camera_health(cam: str = None):
+    """相机健康：状态/帧龄/重开次数/实测 fps。
+
+    不传 cam 时返回整个相机池（多路片区时能一眼看到哪路死了）。
+    """
+    pool = cam_pool_state()
+    if cam:
+        return {"success": True, "key": str(_camera_key(cam)), "pool": pool}
+    return {"success": True, "pool": pool, "camera_num": camera_num,
+            "configured_zones": [c.get('id') for c in cfg_cameras]}
+
+
+@app.post("/api/camera/restart")
+async def camera_restart(payload: dict = None):
+    """手动强制重开相机（现场抢救用）：换 handle + 重建采集线程。"""
+    payload = payload or {}
+    cam_id = payload.get("cam")
+    key = _camera_key(cam_id)
+    src = _CAM_SOURCES.get(key)
+    if src is None:
+        # 还没人订阅过：直接开一个（同时顺便验证设备能不能开）
+        source, _zone_group, zone_label = resolve_camera(cam_id)
+        src = cam_get_source(key, source=source, name=zone_label or str(source), **_cam_kwargs())
+        _CAM_SOURCES[key] = src
+    ok = src.restart()
+    return {"success": bool(ok), "key": str(key), "state": src.state()}
 
 
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket):
-    """摄像头实时流：采集 → 推理 → 推 JPEG + 结果 + 风险；中/高风险自动联动喷淋 + 语音。
+    """摄像头实时流：共享采集 → 推理 → 推 JPEG + 结果 + 风险；中/高风险自动联动喷淋 + 语音。
 
-    可选 query 参数 cam（片区 id，如 'A'/'B'）：多路定点监测时选择片区摄像头，
-    该片区绑定的分组决定自动喷淋目标（未配 CONFIG.cameras 时忽略，退回单摄）。
+    可选 query 参数 cam（片区 id，如 'A'/'B'）：多路定点监测时选择片区摄像头。
+
+    与旧版本的区别（重要）：
+    * 多个客户端（手机 + PC）共享同一个采集源，不再各开一个 VideoCapture；
+    * 掉线/黑屏由看门狗自愈，客户端不会被卡死（只会收到 camera_down 提示）。
     """
     await websocket.accept()
 
     cam_id = websocket.query_params.get('cam') or websocket.query_params.get('zone')
     source, zone_group, zone_label = resolve_camera(cam_id)
+    key = _camera_key(cam_id)
 
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
+    try:
+        # 注意：每次都调一次 get_source，保证引用计数与 finally 里的 release 一一对应
+        cam = cam_get_source(key, source=source, name=zone_label or str(source), **_cam_kwargs())
+        _CAM_SOURCES[key] = cam
+    except Exception as exc:
+        traceback.print_exc()
         await websocket.send_text(json.dumps(
-            {"error": f"无法打开摄像头 {zone_label or source}"}, ensure_ascii=False))
+            {"error": f"无法打开摄像头 {zone_label or source}: {exc}"},
+            ensure_ascii=False))
         await websocket.close()
         return
 
-    frame_interval = 1.0 / 15.0  # 目标约 15 FPS
+    if not cam.wait_first_frame(timeout=float(cfg_camera.get('probe_timeout', 8.0) or 5.0)):
+        st = cam.state()
+        await websocket.send_text(json.dumps(
+            {"error": f"无法打开摄像头 {zone_label or source}（{st.get('last_error') or '拿不到首帧'}）",
+             "camera": st}, ensure_ascii=False))
+        await websocket.close()
+        cam_release_source(key)
+        return
+
+    stream_fps = float(cfg_camera.get('stream_fps', 15) or 15)
+    # 共享推理泵：多个客户端只跑一份推理，避免 GPU 重复计算
+    _ensure_pump()
+
     last_push = 0.0
+    last_seq = -1
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                await asyncio.sleep(0.05)
+            ok, frame = cam.read()
+            if not ok or frame is None:
+                # 看门狗正在自愈：告诉客户端一声，等帧，不退出
+                st = cam.state()
+                if st.get('state') != 'ok':
+                    await websocket.send_text(json.dumps(
+                        {"warning": "摄像头暂时无帧，正在自动重连",
+                         "camera": st}, ensure_ascii=False))
+                await asyncio.sleep(0.2)
+                continue
+
+            result, age = _latest_result()
+            with _pump_lock:
+                seq = _pump_state.get('seq', 0)
+            if result is None or seq == last_seq:
+                # 引擎还没产出结果：先把画面本身推给客户端
+                now = time.time()
+                if now - last_push >= 1.0 / stream_fps:
+                    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    payload = {
+                        "success": True, "count": 0, "detections": [],
+                        "risk": {"level": "无风险", "detail": "正在推理中…"},
+                        "result_image": base64.b64encode(buffer).decode('utf-8'),
+                        "timestamp": datetime.now().isoformat(),
+                        "camera": cam.state(),
+                    }
+                    if zone_label:
+                        payload["zone"] = zone_label
+                    await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+                    last_push = now
+                await asyncio.sleep(0.02)
                 continue
 
             now = time.time()
-            if now - last_push < frame_interval:
-                await asyncio.sleep(0.005)
-                continue
+            if now - last_push >= 1.0 / stream_fps:
+                payload = dict(result)
+                if zone_label:
+                    payload["zone"] = zone_label
+                payload["camera"] = cam.state()
+                payload["result_age"] = round(age, 2) if age is not None else None
+                await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+                last_push = now
+                last_seq = seq
 
-            result = _predict_and_format(frame)
-            last_push = time.time()
-
-            # 中/高风险联动：喷淋 + 语音（均异步，不阻塞推理）；按片区定向
-            risk_level = result["risk"]["level"]
-            if risk_level in ('高风险', '中风险'):
-                _linkage(risk_level, result["detections"], zone_group=zone_group)
-
-            if zone_label:
-                result["zone"] = zone_label
-            await websocket.send_text(json.dumps(result, ensure_ascii=False))
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0.005)
     except WebSocketDisconnect:
         pass
     except Exception:
         traceback.print_exc()
     finally:
-        cap.release()
+        # 只减引用计数：最后一个订阅者离开才真正关设备
+        cam_release_source(key)
+        _CAM_SOURCES.pop(key, None)
+
+# ==================== 手机端实时上传（二进制帧） ====================
+@app.websocket("/ws/phone")
+async def ws_phone(websocket: WebSocket):
+    """手机摄像头实时识别：手机上传 JPEG 二进制帧，服务端只回检测 JSON。
+
+    为什么不用 HTTP 轮询：手机 2~3 帧/秒上传，用 WebSocket 省掉每帧的握手开销，
+    而且能天然做"单帧背压"（客户端收到结果才发下一帧）。
+    为什么**不回传图像**：手机流量与延迟都金贵，检测框由前端自己叠在预览上。
+
+    协议：客户端每帧发一个二进制消息（JPEG/PNG 原始字节）；
+         服务端回文本 JSON：{success, count, detections, risk, elapsed, ts}
+         出问题时回 {"error": "..."} 或 {"warning": "..."}。
+    """
+    await websocket.accept()
+    n_frames = 0
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get('type') == 'websocket.disconnect':
+                break
+            data = msg.get('bytes')
+            if not data:
+                # 文本消息：当作心跳/控制
+                txt = msg.get('text') or ''
+                if txt.strip() in ('ping', '"ping"'):
+                    await websocket.send_text(json.dumps({"pong": True}))
+                continue
+
+            nparr = np.frombuffer(data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None:
+                await websocket.send_text(json.dumps(
+                    {"error": "无法解析手机上传的图像帧"}, ensure_ascii=False))
+                continue
+
+            t0 = time.time()
+            try:
+                result = await asyncio.get_running_loop().run_in_executor(
+                    None, _predict_and_format, img)
+            except Exception as exc:
+                traceback.print_exc()
+                await websocket.send_text(json.dumps(
+                    {"error": f"推理失败: {exc}"}, ensure_ascii=False))
+                continue
+
+            n_frames += 1
+            payload = {
+                "success": True,
+                "count": result["count"],
+                "detections": result["detections"],
+                "risk": result["risk"],
+                "elapsed": round(time.time() - t0, 3),
+                "frame_no": n_frames,
+                "ts": datetime.now().strftime('%H:%M:%S'),
+            }
+            # 手机实时流同样做风险联动（语音 + 喷淋），与定点相机一致的口径
+            risk_level = result["risk"]["level"]
+            if risk_level in ('高风险', '中风险'):
+                try:
+                    _linkage(risk_level, result["detections"])
+                except Exception:
+                    pass
+            await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        traceback.print_exc()
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ==================== 程序入口 ====================
@@ -1041,6 +656,14 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="监听地址")
     parser.add_argument("--port", type=int, default=8080, help="监听端口")
     parser.add_argument("--reload", action="store_true", help="开发模式热重载")
+    parser.add_argument("--https", action="store_true",
+                        help="额外开一个 HTTPS 端口（手机 getUserMedia 实时模式需要）")
+    parser.add_argument("--https-port", type=int,
+                        default=int((config.get('PHONE', {}) or {}).get('https_port', 8443) or 8443),
+                        help="HTTPS 端口")
+    parser.add_argument("--cert-dir",
+                        default=str((config.get('PHONE', {}) or {}).get('cert_dir', './config/certs')),
+                        help="证书目录（不存在会自动生成自签证书）")
     args = parser.parse_args()
 
     if not HAS_WEB:
@@ -1048,6 +671,12 @@ if __name__ == "__main__":
         print("  pip install fastapi uvicorn python-multipart")
         sys.exit(1)
 
+    _ips = _lan_ips() or ['<本机IP>']
+    _fb_st = feedback.status()
+    # 把真实端口告诉页面层：这样 `--port 8090` 启动时，手机页里内嵌的
+    # 接口地址会自动跟着变成 8090（否则页面会去连 8080，调接口全失败）
+    _srv_ports['http'] = int(args.port)
+    _srv_ports['https'] = int(args.https_port) if args.https else None
     print(f"""
 ============================================================
   CropGuard - 农作物害虫智能检测系统 Web API
@@ -1055,11 +684,33 @@ if __name__ == "__main__":
   模型: {weights_path}
   类别数: {len(yolo_model.names)}
   设备: {device}
+  喷淋: transport={spray.transport} available={spray.available}
+  语音: engine={_fb_st['tts'].get('engine')} ready={_fb_st['tts'].get('ready')}
   服务地址: http://{args.host}:{args.port}
   Web演示: http://{args.host}:{args.port}/
-  移动端监测: http://{args.host}:{args.port}/stream
+  手机会话页: http://{_ips[0]}:{args.port}/m
+  手机监测页: http://{_ips[0]}:{args.port}/stream
   API文档: http://{args.host}:{args.port}/docs
 ============================================================
-""")
+""", flush=True)
 
-    uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
+    if not args.https:
+        uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
+    else:
+        # HTTP 与 HTTPS 同时监听（共享同一个 app：相机/模型/历史都是单实例）
+        from tool.gen_cert import ensure_cert
+        cert_file, key_file, err = ensure_cert(args.cert_dir)
+        if err:
+            print(f"[WARN] HTTPS 证书不可用（{err}）；只启动 HTTP。"
+                  f"手机实时模式需要 HTTPS。", flush=True)
+            uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
+        else:
+            print(f"[INFO] HTTPS 证书: {cert_file}", flush=True)
+            print(f"[INFO] 手机实时模式: https://{_ips[0]}:{args.https_port}/m"
+                  f"（首次访问会提示证书不受信任，选「继续访问」即可）", flush=True)
+            http_server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
+            https_server = uvicorn.Server(uvicorn.Config(
+                app, host=args.host, port=args.https_port,
+                ssl_keyfile=key_file, ssl_certfile=cert_file))
+            threading.Thread(target=https_server.run, name='HTTPS', daemon=True).start()
+            http_server.run()

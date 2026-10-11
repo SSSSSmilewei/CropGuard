@@ -33,12 +33,13 @@ class SprayController:
     def __init__(self, serial_port=None, baud=115200, enabled=True,
                  risk_map=None, min_interval=3.0,
                  transport='serial', http_targets=None, http_timeout=1.0,
-                 mqtt=None):
+                 mqtt=None, max_duration=30):
         self.enabled = bool(enabled)
         self.serial_port = serial_port
         self.baud = int(baud or 115200)
         self.risk_map = risk_map or {}
         self.min_interval = float(min_interval)
+        self.max_duration = int(max_duration or 30)
 
         # ---------- 传输方式 ----------
         self.transport = str(transport or 'serial').lower()
@@ -138,6 +139,13 @@ class SprayController:
             return list(self.http_targets.values())
         return []
 
+    def _stop_url(self, url):
+        """把节点 /spray 地址换成 /stop（固件 http_node 提供 /stop）。"""
+        u = str(url or '')
+        if u.endswith('/spray'):
+            return u[:-len('/spray')] + '/stop'
+        return u.rstrip('/') + '/stop'
+
     def _write(self, command: dict) -> bool:
         """写一条指令到目标设备（按传输方式分派）。"""
         if not self.available:
@@ -218,9 +226,31 @@ class SprayController:
             duration = 2
         if duration <= 0:
             duration = 2
-        if duration > 30:
-            duration = 30  # 安全上限，避免误触长时间喷水
+        if duration > self.max_duration:
+            duration = self.max_duration  # 安全上限，避免误触长时间喷水
         self._send_async({'group': group, 'duration': duration})
+        return True
+
+    def stop(self, group='all'):
+        """立即停止该分组的喷洒（节点固件 /stop，或 duration=1 让继电器尽快断开）。"""
+        if not self.enabled or not self.available:
+            return False
+        group = group or 'all'
+        if self.transport == 'http':
+            urls = [self._stop_url(u) for u in self._targets_for(group)]
+            if not urls:
+                return False
+
+            def _job():
+                for url in urls:
+                    try:
+                        requests.post(url, json={'group': group}, timeout=self.http_timeout)
+                    except Exception:
+                        continue
+            threading.Thread(target=_job, daemon=True).start()
+            return True
+        # 串口/MQTT 没有独立 stop 指令：发 duration=1 让节点立即进入结束流程
+        self._send_async({'group': group, 'duration': 1})
         return True
 
     def close(self):

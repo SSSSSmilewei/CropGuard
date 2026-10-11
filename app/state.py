@@ -1,0 +1,183 @@
+# -*- coding: utf-8 -*-
+"""应用级共享状态：配置、模型、反馈设备、相机池、推理泵状态、喷淋历史。
+
+本模块在 import 时完成一次性初始化（加载 YOLO、打开串口/TTS 等），
+api_server.py / 其它入口统一从这里取实例，避免各自重复初始化。
+"""
+import os
+import threading
+from datetime import datetime
+
+import numpy as np
+from ultralytics import YOLO
+
+from tool.parser import get_config
+
+from feedback.feedback import Feedback
+from feedback.tts import TTSEngine
+from feedback.spray import SprayController
+
+from tool.camera_source import (
+    get_source as cam_get_source,
+    release_source as cam_release_source,
+    pool_state as cam_pool_state,
+)
+
+# ---------------------------------------------------------------- 配置
+config = get_config('./config/configs.yaml')
+cfg_model = config.MODEL
+weights_path = cfg_model.WEIGHT
+conf_thres = float(cfg_model.CONF)
+imgsz = int(cfg_model.IMGSIZE)
+device = cfg_model.DEVICE
+chinese_name = config.get('CONFIG', {}).get('chinese_name', {})
+
+# ---------------------------------------------------------------- 模型加载
+if not os.path.exists(weights_path):
+    print(f"[WARN] Weight file {weights_path} not found")
+    # 兜底权重 yolov8s.pt 已在 2026-10-08 清理时删除；
+    # 当前 config/configs.yaml 指向的 best.pt 存在，正常不会走到这里。
+    weights_path = 'yolov8s.pt'
+    print(f"[WARN] Falling back to {weights_path} (not present locally; ultralytics will try to download it)")
+
+print(f"[INFO] Loading model: {weights_path}")
+print(f"[INFO] Device: {device}")
+yolo_model = YOLO(weights_path)
+# 预热
+yolo_model.predict(np.zeros((300, 300, 3), dtype=np.uint8), device=device)
+print(f"[INFO] Model loaded. Classes: {len(yolo_model.names)}")
+print(f"[INFO] Classes: {list(yolo_model.names.values())}")
+
+# ---------------------------------------------------------------- 信号反馈 & 喷淋执行（国赛形态C 物理闭环）
+cfg_feedback = config.get('FEEDBACK', {}) or {}
+cfg_tts = cfg_feedback.get('tts', {}) or {}
+_tts_engine = TTSEngine(
+    enabled=bool(cfg_feedback.get('enabled', True)) and str(cfg_tts.get('engine', 'auto')) != 'none',
+    engine=str(cfg_tts.get('engine', 'auto') or 'auto'),
+    rate=float(cfg_tts.get('rate', 180) or 180),
+    volume=float(cfg_tts.get('volume', 1.0) or 1.0),
+    dedup_sec=float(cfg_tts.get('dedup_sec', 0.5) or 0),
+)
+feedback = Feedback(
+    serial_port=cfg_feedback.get('serial_port') or None,
+    baud=int(cfg_feedback.get('baud', 9600)),
+    enabled=bool(cfg_feedback.get('enabled', True)),
+    speak_interval=float(cfg_feedback.get('speak_interval', 3)),
+    tts=_tts_engine,
+    announce_no_risk=bool(cfg_feedback.get('announce_no_risk', False)),
+)
+print(f"[INFO] TTS engine={feedback.status()['tts'].get('engine')} "
+      f"ready={feedback.status()['tts'].get('ready')}")
+if bool(cfg_feedback.get('tts_selftest', False)):
+    # 启动念一句：现场一眼就能确认"到底响不响"（不响则日志给出后端与错误原因）
+    if TTSEngine.wait_backend(_tts_engine, timeout=5.0):
+        _tts_engine.speak('语音播报自检，农智云已就绪', flush=True)
+
+cfg_spray = config.get('SPRAY', {}) or {}
+spray = SprayController(
+    serial_port=cfg_spray.get('serial_port') or None,
+    baud=int(cfg_spray.get('baud', 115200)),
+    enabled=bool(cfg_spray.get('enabled', True)),
+    risk_map=cfg_spray.get('risk_map', {}) or {},
+    min_interval=float(cfg_spray.get('min_interval', 3)),
+    transport=cfg_spray.get('transport', 'serial'),
+    http_targets=cfg_spray.get('http_targets', []) or [],
+    http_timeout=float(cfg_spray.get('http_timeout', 1.0) or 1.0),
+    mqtt=cfg_spray.get('mqtt', {}) or {},
+    max_duration=int(cfg_spray.get('max_duration', 5) or 5),
+)
+print(f"[INFO] Spray transport={spray.transport} available={spray.available}")
+
+# ---------------------------------------------------------------- 摄像头源解析（多路片区方案 + 单摄回退）
+cfg_cameras = config.get('CONFIG', {}).get('cameras') or []
+camera_num = int(config.get('CONFIG', {}).get('camera_num', 0))
+cfg_camera = config.get('CAMERA', {}) or {}
+
+# 相机 key -> CameraSource（仅供 /api/camera/* 查询与重启；引用计数仍由 camera_source 维护）
+_CAM_SOURCES = {}
+
+
+def _cam_kwargs():
+    """采集参数（config.CAMERA 段，缺省值保证老配置也能跑）。"""
+    return {
+        'width': int(cfg_camera.get('width', 1280) or 0),
+        'height': int(cfg_camera.get('height', 720) or 0),
+        'fourcc': cfg_camera.get('fourcc', 'MJPG') or None,
+        'backend': str(cfg_camera.get('backend', 'auto') or 'auto'),
+        'stale_sec': float(cfg_camera.get('stale_sec', 2.0) or 2.0),
+        'probe_timeout': float(cfg_camera.get('probe_timeout', 8.0) or 5.0),
+    }
+
+
+def _camera_key(cam_id=None):
+    """相机缓存键：多路按片区 id，单摄固定 'default'。"""
+    if cfg_cameras:
+        return ('cam', str(cam_id or '').strip().lower() or 'default')
+    return ('cam', 'default')
+
+
+def _normalize_source(src):
+    """规范化摄像头 source：纯数字串转 int，其余按路径/RTSP URL 处理。"""
+    if isinstance(src, str):
+        s = src.strip()
+        return int(s) if s.isdigit() else s
+    return src
+
+
+def resolve_camera(cam_id=None):
+    """解析摄像头源，返回 (source, group, label)。
+
+    - 配了 CONFIG.cameras 时：按 id 匹配（如 'A'/'B'）；未命中则取第一路
+    - 未配 cameras 时：回退单摄 camera_num，group/label 为空
+    """
+    if cfg_cameras:
+        chosen = None
+        if cam_id:
+            target = str(cam_id).strip().lower()
+            for c in cfg_cameras:
+                if str(c.get('id', '')).strip().lower() == target:
+                    chosen = c
+                    break
+        if chosen is None:
+            chosen = cfg_cameras[0]
+        return (
+            _normalize_source(chosen.get('source', 0)),
+            str(chosen.get('group', '') or ''),
+            str(chosen.get('name') or chosen.get('id') or ''),
+        )
+    return camera_num, '', ''
+
+
+# ---------------------------------------------------------------- 联动/喷淋历史（Client 页「历史回看」用，内存环形缓存）
+spray_history = []
+
+
+def _record_history(risk_level, detections, group=None, duration=None, source='auto',
+                    via=''):
+    """记录一条联动/喷淋历史。
+
+    via: 该指令的发出通道（web/manual/phone/chat/auto），前端历史列表会显示。
+    """
+    names = []
+    for d in (detections or []):
+        n = d.get('chinese_name') or d.get('class_name') if isinstance(d, dict) else str(d)
+        if n:
+            names.append(str(n))
+    spray_history.append({
+        'ts': datetime.now().strftime('%H:%M:%S'),
+        'source': source,
+        'via': via or source,
+        'risk': risk_level,
+        'group': group,
+        'duration': duration,
+        'detections': names[:8],
+    })
+    if len(spray_history) > 50:
+        del spray_history[:len(spray_history) - 50]
+
+
+# ---------------------------------------------------------------- 共享推理泵状态（多客户端只跑一份推理）
+_pump_lock = threading.Lock()
+_pump_state = {'task': None, 'stop': None, 'last': None, 'last_ts': 0.0,
+               'seq': 0, 'count': 0}
+_last_result = {"result": None}          # 最近一次检测结果，供 /api/ask "结合当前虫情提问"用

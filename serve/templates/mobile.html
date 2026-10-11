@@ -1,0 +1,94 @@
+<!DOCTYPE html><html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>农智云 · 手机端</title>
+<style>
+{{STYLE}}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🌿 农智云 · 手机端</h1>
+  <div class="status" id="status"><span class="dot"></span>正在连接服务器…</div>
+</div>
+
+<div class="warnbar" id="secureTip" style="display:none">
+  当前是 <b>HTTP</b> 访问，浏览器不允许网页直接调用手机摄像头（实时模式需要 HTTPS）。
+  请用 <a id="httpsLink" style="color:#ffd08a;font-weight:bold" href="#">HTTPS 地址</a> 打开
+  （首次会提示证书不受信任，选"继续访问"）；或者直接用下面的<b>拍照识别</b>，它不需要 HTTPS。
+</div>
+
+<!-- ==================== 一、识别 ==================== -->
+<div class="card">
+  <h3>📷 害虫识别</h3>
+  <div class="mode-row">
+    <button id="btnModePhoto" class="active" onclick="setMode('photo')">拍照模式(HTTP可用)</button>
+    <button id="btnModeLive" onclick="setMode('live')">实时模式(需HTTPS)</button>
+  </div>
+
+  <!-- 拍照模式 -->
+  <div id="photoPane">
+    <button class="big" onclick="document.getElementById('fileInput').click()">📸 拍照 / 选择图片</button>
+    <input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none">
+    <div class="hint">拍照后自动上传服务器识别，返回带框结果图与防治建议。</div>
+  </div>
+
+  <!-- 实时模式 -->
+  <div id="livePane" style="display:none">
+    <div class="video-wrap">
+      <video id="phoneVideo" playsinline muted autoplay></video>
+      <div class="overlay" id="liveOverlay">未开始</div>
+    </div>
+    <div class="row">
+      <button id="btnLiveStart" onclick="startLive()">▶ 开始实时识别</button>
+      <button class="ghost" id="btnLiveStop" onclick="stopLive()">■ 停止</button>
+    </div>
+    <div class="hint" id="liveHint">实时模式把手机画面按 ~2.5 帧/秒上传到服务器识别，结果实时叠加（不回传图像，省流量）。</div>
+  </div>
+
+  <div class="risk none" id="riskBar" style="margin-top:10px">风险等级：--</div>
+  <div class="video-wrap" id="resultWrap" style="display:none"><img id="resultImage" alt="检测结果"></div>
+  <div id="detList"><div class="empty">等待识别结果…</div></div>
+  <div class="advice" id="adviceBox" style="display:none"></div>
+</div>
+
+<!-- ==================== 二、大模型问答 ==================== -->
+<div class="card">
+  <h3>🤖 问大模型（本地 Ollama，离线）</h3>
+  <input type="text" id="chatInput" placeholder="例如：蚜虫怎么防治？/ 现在检测到的虫怎么处理？">
+  <div class="row">
+    <button onclick="askLLM()">发送提问</button>
+    <button class="ghost" onclick="clearChat()">清空</button>
+  </div>
+  <div class="hint">回答只依据本地知识库片段，无依据会明确拒答（防幻觉）。</div>
+  <div id="chatBox"></div>
+</div>
+
+<!-- ==================== 三、喷洒控制 ==================== -->
+<div class="card">
+  <h3>💦 喷洒控制（需人工确认）</h3>
+  <input type="text" id="cmdInput" placeholder="例如：给 A 片区喷 3 秒">
+  <div class="row">
+    <button class="warn" onclick="parseCommand()">解析指令</button>
+  </div>
+  <div class="confirm" id="cmdConfirm"></div>
+  <div class="row" style="margin-top:12px">
+    <button class="danger" onclick="manualSpray('all',3)">全体喷 3s</button>
+    <button class="warn" onclick="manualSpray('g1',2)">A区(g1) 2s</button>
+    <button class="warn" onclick="manualSpray('g2',2)">B区(g2) 2s</button>
+  </div>
+  <div class="hint" id="sprayHint">雾化片单次上限 5 秒，后端与固件都会再钳一次。</div>
+</div>
+
+<!-- ==================== 四、历史 ==================== -->
+<div class="card">
+  <h3>🕘 联动 / 喷淋历史</h3>
+  <div id="histList"><div class="empty">暂无记录</div></div>
+</div>
+
+<script>
+{{SCRIPT}}
+</script>
+</body>
+</html>
