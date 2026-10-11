@@ -2,42 +2,6 @@ import cv2
 import xlwt
 
 
-def update_center_points(data, dic_center_points):
-    '''
-    更新坐标
-    '''
-    for row in data:
-        x1, y1, x2, y2, cls_name, conf, obj_id = row[:7]
-
-        # 计算中心点坐标
-        center_x = int((x1 + x2) / 2)
-        center_y = int((y1 + y2) / 2)
-
-        # 更新字典
-        if obj_id in dic_center_points:
-            # 判断列表长度是否超过30
-            if len(dic_center_points[obj_id]) >= 30:
-                dic_center_points[obj_id].pop(0)
-            dic_center_points[obj_id].append((center_x, center_y))
-        else:
-            dic_center_points[obj_id] = [(center_x, center_y)]
-
-    return dic_center_points
-
-
-def res2OCres(results):
-    lst_res = []
-    if results is None:
-        return lst_res
-    for res in results.tolist():
-        box = res[:4]
-        conf = res[-2]
-        cls = res[-1]
-        lst_res.append([cls, conf, box])
-
-    return list(lst_res)
-
-
 def result_info_format(result_info, box, score, cls_name):
     '''
         格式组合
@@ -93,39 +57,6 @@ def writecsv(DATA, path):
         print(e)
 
 
-def resize_with_padding(image, target_width, target_height, padding_value):
-    """
-    填充原图片的四周
-    """
-    # 原始图像大小
-    original_height, original_width = image.shape[:2]
-
-    # 计算宽高比例
-    width_ratio = target_width / original_width
-    height_ratio = target_height / original_height
-
-    # 确定调整后的图像大小和填充大小
-    if width_ratio < height_ratio:
-        new_width = target_width
-        new_height = int(original_height * width_ratio)
-        top = (target_height - new_height) // 2
-        bottom = target_height - new_height - top
-        left, right = 0, 0
-    else:
-        new_width = int(original_width * height_ratio)
-        new_height = target_height
-        left = (target_width - new_width) // 2
-        right = target_width - new_width - left
-        top, bottom = 0, 0
-
-    # 调整图像大小并进行固定值填充
-    resized_image = cv2.resize(image, (new_width, new_height))
-    padded_image = cv2.copyMakeBorder(resized_image, top, bottom, left, right, cv2.BORDER_CONSTANT,
-                                      value=padding_value)
-
-    return padded_image
-
-
 def compute_color_for_labels(label):
     """
     Simple function that adds fixed color depending on the class.
@@ -154,29 +85,74 @@ def compute_color_for_labels(label):
     return color
 
 
-def draw_text_with_red_background(image, text, position, font=cv2.FONT_HERSHEY_SIMPLEX, font_scale=1, thickness=2,
-                                  color=(0, 0, 255)):
-    # 获取文本的大小
-    (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, thickness)
+def _text_color_for(background):
+    """按背景亮度选黑字/白字 —— 浅底黑字、深底白字，任何底色都看得清。"""
+    b, g, r = int(background[0]), int(background[1]), int(background[2])
+    luma = 0.114 * b + 0.587 * g + 0.299 * r
+    return (0, 0, 0) if luma > 140 else (255, 255, 255)
 
-    # 计算矩形背景的大小和位置
-    background_width = text_width + 10
-    background_height = text_height + 10
-    background_position = (position[0], position[1] - text_height + 5)
 
-    # 在图像上绘制红色背景矩形
-    cv2.rectangle(image, background_position,
-                  (background_position[0] + background_width, background_position[1] + background_height),
-                  color, cv2.FILLED)
+# 标签字号取"图像长边"的固定比例，这样**不同分辨率的图缩到预览窗口后，
+# 屏幕上的字号是一样的**（预览是按长边等比缩放，所以按长边算才对）。
+# 现场踩过的坑：原来 font_scale 写死 0.5，720p 勉强能看，
+# 但 1944x2580 的相机原图缩到 660px 预览后标签只剩 2~3px，根本读不出类别和置信度。
+_LABEL_TEXT_RATIO = 0.032      # 文字高度 ≈ 长边 × 3.2%
+_LABEL_MIN_SCALE = 0.6
+_LABEL_MAX_SCALE = 4.0
+_HERSHEY_UNIT_HEIGHT = 22.0    # FONT_HERSHEY_SIMPLEX 在 font_scale=1 时的大写字母高度
 
-    # 计算文本的居中位置
-    text_x = background_position[0] + int((background_width - text_width) / 2)
-    text_y = background_position[1] + int((background_height + text_height) / 2)
 
-    # 在图像上绘制文本
-    cv2.putText(image, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+def _label_metrics(image):
+    """按图像尺寸算标签的 (font_scale, thickness, pad)。"""
+    h, w = image.shape[:2]
+    longest = max(h, w) or 720
+    scale = (_LABEL_TEXT_RATIO * longest) / _HERSHEY_UNIT_HEIGHT
+    scale = max(_LABEL_MIN_SCALE, min(_LABEL_MAX_SCALE, scale))
+    thickness = max(1, int(round(scale * 1.6)))
+    pad = max(3, int(round(scale * 6)))
+    return scale, thickness, pad
 
-    return image
+
+def draw_info(frame, results):
+    """在图上画检测框 + 「类别 置信度」标签。
+
+    标签随图像尺寸等比放大（见 `_label_metrics`），并按底色明暗自动选黑/白字，
+    保证不同分辨率、不同背景的图上都看得清。
+    """
+    if not results:
+        return frame
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale, thickness, pad = _label_metrics(frame)
+    img_h, img_w = frame.shape[:2]
+
+    for i, bbox in enumerate(results):
+        cls_name = bbox[0]
+        conf = bbox[1]
+        box = bbox[2]
+
+        color = compute_color_for_labels(i)
+        x1, y1, x2, y2 = (int(v) for v in box)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+
+        try:
+            text = f'{cls_name} {float(conf):.2f}'
+        except (TypeError, ValueError):
+            text = f'{cls_name} {conf}'
+        (tw, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+
+        # 标签默认贴在框上沿；顶到画面外就改画到框内侧，避免被裁掉
+        top = y1 - th - 2 * pad
+        if top < 0:
+            top = min(y1 + pad, max(0, img_h - th - 2 * pad))
+        left = max(0, min(x1, img_w - tw - 2 * pad))
+
+        cv2.rectangle(frame, (left, top), (left + tw + 2 * pad, top + th + 2 * pad),
+                      color, cv2.FILLED)
+        cv2.putText(frame, text, (left + pad, top + th + pad - max(1, pad // 3)),
+                    font, font_scale, _text_color_for(color), thickness, cv2.LINE_AA)
+
+    return frame
 
 
 def assess_risk(results, image_shape=None):
@@ -232,18 +208,3 @@ def assess_risk(results, image_shape=None):
 
     return level, color, detail
 
-
-def draw_info(frame, results):
-    for i, bbox in enumerate(results):
-        cls_name = bbox[0]
-        conf = bbox[1]
-        box = bbox[2]
-
-        color = compute_color_for_labels(i)
-        # 彩框 yolov5
-        cv2.rectangle(frame, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])), color, 2)
-        # cls_name
-        frame = draw_text_with_red_background(frame, str(cls_name) + ' ' + str(conf), (int(box[0]), int(box[1])),
-                                              font=cv2.FONT_HERSHEY_SIMPLEX, font_scale=0.5, thickness=1, color=color)
-
-    return frame

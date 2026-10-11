@@ -42,8 +42,6 @@ UI:
   export_button_font: "255,255,255"
   # 图片填充 RGB格式
   padvalue: [ 167,200,171 ]
-  # 表格每列的宽度
-  column_widths: [ 50, 220, 120, 200, 80, 80, 140 ]
   # 表格中字体的颜色 RGB格式
   column_color: [ 0, 0, 0 ]
   # 个人信息
@@ -129,11 +127,20 @@ AI:
       verify_ssl: true
 
 CONFIG:
-  # 摄像头id,如果发现打开摄像头没有画面，修改下面的数值 0 1 2 3 等
-  # 2026-10-08 实测（USB Camera, VID_0C45&PID_6360，外接）：
-  #   0 = HP Wide Vision HD Camera（笔记本内置）
-  #   1 = USB Camera（外接）  <<< 当前用的就是这个
-  # 若换机器/换插口导致错位，运行 `python tool/camera_probe.py` 重新确认
+  # ==================== 摄像头选择 ====================
+  # 【推荐】用"设备标识"选相机 —— VID/PID 或设备名不会因为插拔顺序而改变。
+  #   'vid_0c45'        -> USB Camera（外接，本机 VID_0C45&PID_6360）
+  #   'vid_04f2'        -> HP Wide Vision HD Camera（笔记本内置）
+  #   'USB Camera'      -> 按设备名子串匹配（不区分大小写）
+  #   'vid_0c45&pid_6360' / '0c45:6360' -> VID+PID 精确匹配
+  #   留空 '' 则回退到下面的 camera_num 数字索引。
+  # 看当前有哪些相机：python tool/ds_enum.py
+  camera_device: 'vid_0c45'
+  # 【兜底】数字索引。⚠️ 索引由 DirectShow 枚举顺序决定，会重排：
+  #   2026-10-08 实测：0 = HP 内置，1 = USB Camera 外接
+  #   2026-10-11 实测：0 = USB Camera 外接，1 = HP 内置   ← 整个翻过来了
+  # 所以只有在 camera_device 留空时才会用到这个值；写死索引很容易"打开的是内置相机
+  # 但画面看起来一切正常"，不主动核对根本发现不了。核对：python tool/camera_probe.py
   camera_num: 1
   # 多路定点监测（国赛"双路片区"方案）：留空 [] 则退回上面的单摄 camera_num
   # source 支持：本地索引(0/1/2)、视频文件路径、RTSP/HTTP 流地址
@@ -259,7 +266,67 @@ CONFIG:
     "Cicadellidae": "叶蝉科",
     '无目标': '无目标' }
 
-# 信号反馈配置
+# ==================== 摄像头采集（共享单例 + 看门狗自愈） ====================
+# 说明：采集由 tool/camera_source.py 统一负责，GUI（main.py）与 API 服务器
+# （api_server.py）共用同一套逻辑；多个客户端（手机 + PC）共享同一个采集源，
+# 不会再出现"第二个页面打不开相机"，断流 / 黑屏时看门狗会自动重开。
+CAMERA:
+  # 后端优先级：auto(Windows 优先 DSHOW，失败回退 MSMF/默认) | dshow | msmf
+  backend: 'auto'
+  # 采集分辨率（0 = 用驱动默认）。MJPG 下 1280x720 一般能到 30fps
+  width: 1280
+  height: 720
+  # 强制 MJPG：很多 USB 摄像头默认 YUY2，帧率被压到 5~10fps
+  fourcc: 'MJPG'
+  # 超过这么久没有新帧就判"卡死"并换 handle 自愈（秒）
+  stale_sec: 2.0
+  # 打开设备后等第一帧的最长时间（秒）。
+  # ⚠️ 实测数据（2026-10-09，本机 USB 相机）：索引 1 冷启动要 **3.0 秒**才吐第一帧，
+  #    索引 0 约 2.0 秒。所以这个值不能小 —— 调小会把"只是启动慢"的相机误判成"打不开"。
+  probe_timeout: 8.0
+  # 推理节奏（fps）：检测频率，越低 GPU 越轻松
+  infer_fps: 5
+  # 推流节奏（fps）：画面推送频率，与推理解耦，画面更跟手
+  stream_fps: 15
+  # ---- 桌面 GUI 预览（影响"卡不卡"的关键项）----
+  # 预览渲染最高帧率：每帧要做 BGR→RGB + 缩放，纯 CPU 活。
+  # 实测 33fps 渲染会把界面拖顿（光帧拷贝就 ~180MB/s）；15 肉眼已流畅。
+  display_fps: 15
+  # 送进预览窗口的最长边(px)：超过就等比缩小，省 CPU。1280→960 明显更跟手
+  display_max_side: 960
+  # 手机端实时上传的采样间隔（毫秒）
+  phone_frame_interval_ms: 400
+  # ---- 历史记录 / 点击回看（GUI 底部表格）----
+  # 带框快照存这里，点表格行直接读回显示。
+  # ⚠️ 只有"样本"才进这张表：拍照识别、打开图片、打开文件夹。
+  #    实时检测只在预览上画框，不写日志（现场评测时 20 个样本必须干净）。
+  history_dir: './output/snapshots'
+  # 拍照识别后，显示完"拍下的那一张"多久自动回到实时画面（毫秒）。
+  # 现场痛点：原来拍完就停在定格画面，必须再点一次「开始运行 >」才能继续看实时，
+  # 180 秒拍 20 张根本来不及。设 0 = 结果一回来就立刻恢复实时（完全不定格）。
+  snap_resume_ms: 400
+
+# ==================== 现场评测（准确度 + 时效性）====================
+# 评分口径（2026-10-11 与用户对齐）：
+#   准确度 20 分 = 正确样本数 × points_per_sample（20 个样本 × 1 分）
+#   时效性 10 分 = time_full_score - max(0, 用时 - time_limit_sec) × overtime_penalty_per_sec
+#   总分   = 准确度 + 时效性（满分 30），扣分扣到 0 为止
+# 计时：从"第一张样本记录"自动开始倒计时，满 target_samples 自动停表。
+EVAL:
+  # 样本数（满分基准）
+  target_samples: 20
+  # 每正确识别 1 个样本得分 -> 准确度满分 20
+  points_per_sample: 1.0
+  # 基准时间（秒）
+  time_limit_sec: 180
+  # 用时 <= time_limit_sec 时的时效满分
+  time_full_score: 10.0
+  # 每超时 1 秒扣多少分
+  overtime_penalty_per_sec: 0.5
+  # 关程序时若本轮已有样本且还没导出过，自动导出一份评分报告（防误关丢分）
+  auto_export_on_close: true
+
+# ==================== 信号反馈配置 ====================
 FEEDBACK:
   # 是否启用反馈（语音播报 + 声光报警）
   enabled: true
@@ -269,8 +336,22 @@ FEEDBACK:
   serial_port: null
   # 串口波特率
   baud: 9600
-  # 语音播报最小间隔（秒），避免连续检测时过于嘈杂
+  # 语音播报最小间隔（秒）：同一状态未变化时的复读间隔
+  # （风险等级或害虫种类一变就立刻播报，不受此值限制）
   speak_interval: 3
+  # 语音引擎：auto(自动探测) | win32com | pyttsx3 | powershell | none
+  #   auto 会按 win32com -> pyttsx3 -> powershell 顺序做"真实出声"校验后选定
+  #   （实测本机 SAPI.SPVoice 的 COM 播报报错、System.Speech(powershell) 正常，
+  #     auto 能自动选到 powershell —— 现场不用手工改配置）
+  tts:
+    engine: 'auto'
+    rate: 180        # 语速（字/分钟）
+    volume: 1.0      # 音量 0~1
+    dedup_sec: 0.5   # 同一句话的去重窗口（秒）
+  # "无风险"是否也播报（默认只在从有风险变为无风险时提示一次）
+  announce_no_risk: false
+  # 启动时念一句自检语音，确认链路活着（日志会打印选中的后端）
+  tts_selftest: true
 
 # 喷淋执行配置（ESP-NOW 网关 + 喷头节点，国赛形态C 物理执行闭环）
 SPRAY:
@@ -291,14 +372,15 @@ SPRAY:
   #   方案丙（无线网关，节点固件零改动）：只配一项 group='gateway'，全部指令发网关，由网关 ESP-NOW 转发
   # ⚠️ 节点现用 DHCP（`-DUSE_DHCP=1`），IP 由热点/路由器分配，**以节点串口打印的为准**：
   #      串口会打印  WIFI_OK  IP=x.x.x.x   <<< 把这个 IP 填到下面
-  #   实测（2026-10-08 校园环境）：手机热点处于「共享已连接 WiFi」桥接模式，
-  #      地址由校园网 DHCP(10.141.169.143) 下发，节点拿到 10.141.169.231；
+  #   实测（2026-10-08）：手机热点处于「共享已连接 WiFi」桥接模式时，
+  #      地址会由**上游网络**的 DHCP 下发（网段不是你预期的热点网段），
   #      此时写死 192.168.43.61 会「WIFI_OK 但服务器够不着」。
-  #   若换成普通手机热点（自带网关、网段固定），节点会自动拿到 192.168.43.x，
+  #   普通手机热点（自带网关、网段固定）节点会自动拿到 192.168.43.x，
   #      也可改回静态：platformio.ini 里把 -DUSE_DHCP=1 改成 0。
+  #   ⚠️ 下面的地址是占位示例，请按现场串口打印的 IP 修改后再用。
   http_targets:
-    - { group: 'g1', url: 'http://10.141.169.231/spray' }   # 片区A 节点（DHCP，实测值）
-    - { group: 'g2', url: 'http://192.168.43.62/spray' }    # 片区B 节点（尚未烧录/上线，占位）
+    - { group: 'g1', url: 'http://192.168.43.61/spray' }   # 片区A 节点（改成实际 IP）
+    - { group: 'g2', url: 'http://192.168.43.62/spray' }   # 片区B 节点（改成实际 IP）
   # 方案丙示例（改用 ESP32/src/wifi_gateway 时再换成这一条）：
   # http_targets:
   #   - { group: 'gateway', url: 'http://192.168.43.60/spray' }
@@ -327,3 +409,40 @@ SPRAY:
   nodes:
     - { id: 1, group: 'g1', name: '片区A', mac: 'AA:BB:CC:DD:EE:01' }
     - { id: 2, group: 'g2', name: '片区B', mac: 'AA:BB:CC:DD:EE:02' }
+  # 手动/语音指令单次喷淋上限（秒）。雾化片怕连续通电，界面与后端都会钳制
+  max_duration: 5
+
+# ==================== 本地大模型问答（RAG + 防幻觉） ====================
+# 只用本机 Ollama，严禁联网 API（国赛离线合规）。
+CHAT:
+  enabled: true
+  # 携带的历史对话轮数（user+assistant 各算一轮）
+  max_history_turns: 6
+  # 检索最高分低于此值时拒绝生成（改为"知识库未涵盖"），防止无依据编造
+  refuse_below: 0.18
+  # 单次问答超时（秒）
+  timeout: 120
+  # 问答留痕（答辩举证"无依据不生成"）
+  log_path: './output/qa_history.jsonl'
+  # 固定随机种子：同一问题同一答案，演示可复现
+  seed: 20261008
+
+RAG:
+  # 召回器：tfidf(内置，零依赖、纯离线) | embedding(预留，需本地 embedding 模型)
+  retriever: 'tfidf'
+  # 召回条数
+  top_k: 4
+  # 字符 n-gram 范围（中文用 char_wb 效果稳，不需要分词库）
+  char_ngram: [2, 4]
+
+# ==================== 手机端 ====================
+PHONE:
+  # HTTPS 端口（getUserMedia 取手机摄像头必须是安全上下文）
+  # 用 --https 启动时 HTTP(8080) 与 HTTPS(8443) 会同时监听
+  https_port: 8443
+  cert_dir: './config/certs'
+  # 手机实时模式：每隔多久抓一帧上传（毫秒）；越小越流畅、越吃带宽
+  frame_interval_ms: 400
+  # 上传帧的最长边（像素），前端压缩后再传
+  upload_max_side: 960
+
