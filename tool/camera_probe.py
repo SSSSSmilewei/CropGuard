@@ -20,6 +20,11 @@ import platform
 
 import cv2
 
+# 允许 `python tool/camera_probe.py` 直接运行时也能 import 到项目内的模块
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 
 CAP_BACKENDS = []
 if platform.system() == 'Windows':
@@ -83,6 +88,25 @@ def main():
     lines.append(f'扫描索引: {indices}')
     lines.append('')
 
+    # 先给"索引 ↔ 设备名/VID"对照表 —— 这才是稳定的选择依据。
+    # 索引会因插拔/重启而重排（本机实测翻过一次），设备标识不会。
+    try:
+        from tool.ds_enum import list_devices
+        devices, derrs = list_devices()
+        lines.append(f'DirectShow 设备表（{len(devices)} 个，顺序即 VideoCapture 索引）：')
+        for d in devices:
+            ident = f"vid_{d['vid']}&pid_{d['pid']}" if d.get('vid') else '未知'
+            lines.append(f"  索引 {d['index']}: {d.get('name') or '(无名)'}   [{ident}]")
+            if d.get('vid'):
+                lines.append(f"           config 里可写: camera_device: 'vid_{d['vid']}'")
+        lines.append('  ⚠️ 工具无法自动判断哪个是"外接"——请配合下面的快照肉眼确认。')
+        for e in derrs:
+            lines.append(f'  （枚举提示：{e}）')
+        lines.append('')
+    except Exception as exc:
+        lines.append(f'（DirectShow 设备表枚举失败：{type(exc).__name__}: {exc}）')
+        lines.append('')
+
     good = []
     for idx in indices:
         got = None
@@ -104,12 +128,13 @@ def main():
         lines.append('结论：一个摄像头都没打开。检查：USB 是否插好、'
                      '是否被其他程序占用（浏览器/微信/QQ/另一个 Python 进程）、'
                      'Windows 设置 → 隐私 → 相机 是否允许桌面应用访问。')
-    elif len(good) == 1:
-        lines.append(f"结论：只有索引 {good[0]['index']} 可用 → "
-                     f"把 config/configs.yaml 的 CONFIG.camera_num 设为 {good[0]['index']}。")
     else:
-        lines.append('结论：以下索引都可用，请打开快照 jpg 肉眼确认哪个是外接摄像头，'
-                     '然后把它的索引填进 config/configs.yaml 的 CONFIG.camera_num：')
+        lines.append('结论：')
+        lines.append('  1) 打开上面的快照 jpg，肉眼确认哪一张是你要用的外接摄像头；')
+        lines.append('  2) 【推荐】在 config/configs.yaml 里写**设备标识**而不是索引：')
+        lines.append('       CONFIG.camera_device: \'vid_xxxx\'      # 取上面设备表里的 VID')
+        lines.append('     索引会因插拔/重启而重排（本机实测翻转过一次），标识不会；')
+        lines.append('  3) 只有确实想按索引时才用 CONFIG.camera_num（并把 camera_device 留空）：')
         for g in good:
             lines.append(f"       索引 {g['index']}  ->  {g['snapshot']}")
 
