@@ -48,7 +48,7 @@
 PlatformIO 要求 **`platformio.ini` 就是 VSCode 打开的文件夹根目录**。
 所以不要打开整个 `yolov8` 仓库，而是：
 
-> VSCode → `File` → `Open Folder…` → 选 `D:\Dev Projects\Pycharm\yolov8\ESP32`
+> VSCode → `File` → `Open Folder…` → 选 `<项目根目录>\ESP32`（例如 `D:\CropGuard\ESP32`）
 
 打开后左下角出现 PlatformIO 图标，点它 → `Project Tasks` 里能看到全部 env。
 

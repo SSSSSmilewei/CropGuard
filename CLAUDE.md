@@ -1,22 +1,26 @@
 # CropGuard 农智云 害虫检测系统
 
 ## 项目位置
-- 工作目录: D:\Dev Projects\Pycharm\yolov8
-- GitHub源码(仅代码): D:\Dev Projects\Pycharm\Pest-detection-master
+- 工作目录: `<项目根目录>`（下文示例统一写作 `D:\CropGuard`）
+- GitHub源码(仅代码): `<参考仓库>\Pest-detection-master`
 - GitHub仓库: https://github.com/Stara-AI/Pest-detection
 - 本项目仓库(开源): https://github.com/Sun-0810-yh/CropGuard（公开，含 best.pt，数据集未上传）
   - ⚠️ 2026-10-08 清理删掉了被 git 跟踪的 runs/train/pest27_final4/weights/best.onnx（与 睿抗国赛项目—农智云/best.onnx 同一份）。要恢复公开仓库里的 ONNX：`git restore runs/train/pest27_final4/weights/best.onnx`，或对比赛目录那份 `git add -f`
+- 测试子仓库(公开，可独立克隆运行): https://github.com/Sun-0810-yh/CropGuard_Test
+  - 内容 = `tests/`(迷你框架+60用例) + `scripts/ask_eval.py` + 被测模块(`feedback/ llm/ tool/ config/ prompts/ main.py`)；
+    不含权重/数据集/`serve/`；本地源在 `_dist/CropGuard_Test/`（已加进主仓库 .gitignore）
+  - 缺 `ultralytics`/`PyQt5` 时 `test_gui_adapter_has_full_interface` 走 `requires()` → SKIP（59 passed + 1 skipped，退出码 0）
 
 ## Python 环境
-- GPU环境: D:\Dev Env\Python\Conda\envs\pest-gpu\python.exe
-- 系统Python: D:\Dev Env\Python\python.exe (3.14, CPU PyTorch)
-- Conda管家: D:\Dev Env\Miniconda
+- GPU环境: `<conda根>\envs\pest-gpu\python.exe`（示例 `D:\Miniconda\envs\pest-gpu\python.exe`）
+- 系统Python: `<系统Python>\python.exe` (3.14, CPU PyTorch)
+- Conda管家: `<conda根>`（示例 `D:\Miniconda`）
 - PyCharm解释器: 右下角选 pest-gpu
 
 ## 竞赛背景 (2026 睿抗 CAIR赛道)
 - 省赛评分: 20张实拍图全对(35分) + 180秒内跑完(15分) + 评估报告含Loss/mAP收敛曲线(10分) + GUI(10分) + PPT(15分)
 - 平台部署: 只上传 best.onnx，必须 imgsz=640（480 会失败）
-- 20张比赛图: F:\Competition_RK\pictures20\（用户自行挑选，全部来自原始实拍池）
+- 20张比赛图: `<比赛图目录>\pictures20\`（自行挑选，全部来自原始实拍池）
 - 平台实拍问题: 相纸打印 + 摄像头拍照导致置信度从 0.8 掉到 0.45；斜着放比正着放置信度更高
 - 时间线: 省赛一等奖，已晋级 2026 睿抗 CAIR 国赛（总决赛）
 
@@ -38,15 +42,55 @@
 - 配置: config/configs.yaml（WEIGHT 已指向 pest27_final4；AI.active_model=local 本地 Ollama qwen2.5:7b，离线合规）
 - GUI入口: main.py（PyCharm 运行或 `python main.py`），界面类 UI.py
 - 推理工具: tool/tools.py
+- 相机采集: tool/camera_source.py（**共享单例 + 看门狗自愈**；GUI/服务器/手机共用，别再加第二套 VideoCapture）
+- 相机探针: tool/camera_probe.py（现场认索引）；独立命令行识别: tool/camera_detect.py
 - 本地LLM: llm/local_llm.py（Ollama，不可用时降级 knowledge_base 兜底）
-- 信号反馈: feedback/feedback.py（pyttsx3 语音 + 串口声光）；喷淋控制: feedback/spray.py（serial/http/mqtt）
+- AI 网关: llm/ai_gateway.py（**唯一 AI 出入口**：RAG 检索 → 接地提示词 → Ollama → 后校验）
+- 检索/防幻觉: llm/retriever.py（TF-IDF 字符 n-gram）、llm/kb_chunks.py、llm/guard.py
+- 接地提示词: prompts/templates/grounded_expert.txt（取代旧 1500 字"报告型"模板）
+- 手机端页面: serve/mobile.py（`GET /m`）；二维码: tool/qr_min.py；证书: tool/gen_cert.py
+- 信号反馈: feedback/feedback.py（播报语义）+ feedback/tts.py（**专用线程 + 多后端真校验**）
+- 喷淋控制: feedback/spray.py（serial/http/mqtt + stop）
 - 硬件固件: ESP32/（PlatformIO 工程，8 个 env，见 ESP32/README.md）
+- 测试: tests/run_tests.py（内置迷你框架，零依赖；`python tests/run_tests.py`）
+- RAG 评测: scripts/ask_eval.py（库内召回 / 库外拒答 / 越权指令拦截）
 
 ## 启动方式
 - GUI: 运行 main.py（PyCharm 或 `python main.py`）
+- Web + 手机端: `python api_server.py`（PC 首页 + `/m` 手机页 + REST/WS）；
+  手机"实时模式"再加 `--https`（HTTPS 8443，自签证书自动生成）
 - 训练: `python train_640.py`（新建）或 `python train_640.py --resume`（续训）
 - 喷淋联调: `python api_server.py`（**唯一**接 SprayController 的入口；GUI 只做语音+串口反馈）
+- 测试: `python tests/run_tests.py`；RAG 评测: `python scripts/ask_eval.py`（`--llm` 才真调大模型）
 - 固件: VSCode 打开 ESP32/ 目录（不是仓库根）→ PlatformIO 选 env → Upload
+
+## 软件端最小闭环（2026-10-08 第二批 · 已实现并实测）
+| 需求 | 落点 | 实测结论 |
+| --- | --- | --- |
+| 外接相机识别 | `tool/camera_source.py` + `api_server.ws_stream` | 无设备时如实报 `dead + last_error`，不静默；有设备走 DSHOW/MJPG |
+| 语音只响一次 | `feedback/tts.py` | 根因＝pyttsx3 SAPI5 的 COM 回调跨线程（`_busy` 永真）+ `_speak_lock` 永锁 + 异常被吞；改**专用线程内建引擎 + 真出声校验 + 多后端兜底**；本机 `SAPI.SPVoice` 不可用、`System.Speech`(powershell) 可用，auto 自动选中；连续 3 句播报通过 |
+| 摄像头卡死 | 同上（看门狗：无新帧/画面指纹不变 → 换 handle；跨客户端引用计数共享） | 无相机时 `/api/camera/health` 显示 dead；`POST /api/camera/restart` 现场抢救 |
+| 用户自由提问 | `llm/ai_gateway.answer` → `POST /api/ask` + GUI 聊天（`ChatWorker`） | GUI 与网页同一答案；`/api/kb/search` 可现场展示召回 |
+| 防幻觉 | 召回闸门(`CHAT.refuse_below`=0.18，低于阈值**不调模型**) + 接地提示词 + `temperature=0.2`/固定 seed + `llm/guard.py` 后校验 | 库外问题直接拒答；编造药名/剂量被标注"请核实" |
+| RAG（原待定项→已做） | `llm/kb_chunks.py` + `llm/retriever.py` + `scripts/ask_eval.py` | 110 片段 / 27 类 / 61 别名；评测：库内召回 20/20、库外拒答 10/10、越权拦截 4/4 |
+| 手机实时+拍照 | `serve/mobile.py`（`/m`）+ `WS /ws/phone` | 二进制帧上传实测 0.15s 回检测 JSON；拍照档纯 HTTP 可用（`capture` 不需要 HTTPS） |
+| 手机提问 → 控制喷洒 | `POST /api/ask_command`（**只解析**）→ 人工确认 → `/api/spray` | 危险词拦截、"100 秒"钳到 5 秒、未指定片区拒绝；大模型绝不直接驱动硬件 |
+| 测试 | `tests/`（迷你框架）+ `scripts/ask_eval.py` | 60 用例全绿（约 38 秒）；ask_eval 三项 100% |
+
+### 这一批踩过的坑（下次别重踩）
+1. `python tests/run_tests.py` 时 runner 是 `__main__`，测试里 `from run_tests import ...` 是**另一个模块实例**
+   → 装饰器状态必须放 `tests/_registry.py` 共享；
+2. 测试写临时文件**不要用 `%TEMP%`**（沙箱可能只允许工作区写，实测 `cv2.imwrite` 报 permission denied），
+   也不要用长路径 + `cv2.VideoWriter`（Windows 报 `CAP_IMAGES: can't find starting number`）→ 用工作区内短路径 + 图片序列；
+3. 手写 QR 时**定时图案要最先放**（否则定位图案的分隔符会覆盖第 8 个模块），
+   且**填充与掩码必须共用同一张"功能区"表**（分开判定会把格式信息区当数据取反，扫码器读不出）；
+   本机 OpenCV 的 `QRCodeDetector` **本身失效**（连它自己 `QRCodeEncoder` 生成的码都解不出），别用它做验证；
+4. `openssl.exe` 必须带 `-config`（本机是 `<conda根>\Library\ssl\openssl.cnf`），
+   且 `-config` 要放在 `req` 子命令**后面**；`New-SelfSignedCertificate` 这条路在本机被策略拒绝；
+5. 本机 `SAPI.SPVoice`（win32com / pyttsx3 都走它）建对象成功但 `Speak` 报 COM 错 →
+   语音后端**必须做"真出声"校验**，不能只看对象是否创建成功；
+6. 相机"设备不在"是常态（硬件没配齐），所有相机相关入口都要能在无设备时给出可读原因，不能抛异常。
+
 
 ## 当前路线（2026-10-08 对齐 · 清理后重定）
 主线：**先跑通单节点闭环，再扩面**。功能按"能不能现场演示"排序，不按"功能多少"排序。
@@ -74,7 +118,7 @@ BLE 走 **服务器 → 节点**（Python `bleak`），**不做手机直连节�
 - **Phase 0 固件可编译**：✅ **已完成并上板验证（2026-10-08）** —— 8 个 env 全部 `SUCCESS`（`pio run` 退出码 0），
   `ENABLE_SERIAL_ALARM=1` 那条可选路径也单独验证过。产物在 `ESP32/.pio/build/<env>/firmware.bin`。
   **真机验证**：片区A 板烧 `selftest` → 串口输出 `SELFTEST_PASS`（29 项断言、0 失败）；
-  芯片 `ESP32-D0WD-V3` rev v3.1，MAC `20:9b:a9:97:8c:60`（做 ESP-NOW 单播时登记用），
+  芯片 `ESP32-D0WD-V3` rev v3.1，MAC `<板子MAC>`（做 ESP-NOW 单播时登记用），
   串口设备为 **COM5**（COM3/COM4 是系统蓝牙虚拟串口，别搞混），460800 波特率烧录一次成功。
   - 踩过的坑与修法（下次别重踩）：
     1. **平台钉 `espressif32@7.1.3`**（Arduino 核心 2.0.17），别升级；
@@ -95,14 +139,14 @@ BLE 走 **服务器 → 节点**（Python `bleak`），**不做手机直连节�
     用 `env:relaytest`（不依赖 WiFi，每 2 秒吸合/断开循环）验证：每 2 秒咔哒一次、板载 LED 同步闪烁。
     雾化负载侧（`COM`+`NO`）尚未接线。
   - **进度（2026-10-08 晚）**：✅ **HTTP 链路 + 继电器真机闭环已跑通**（Phase 1 验收前两条已证）：
-    节点 `http_node_g1` DHCP 拿到 `10.141.169.231`（网关 `10.141.169.143`、RSSI −37dBm）→
+    节点 `http_node_g1` DHCP 拿到 `<节点IP>`（网关 `<热点网关>`、RSSI −37dBm）→
     `GET /status` 200；`POST /spray {"group":"g1","duration":2}` → 串口 `SPRAY_ON group=g1 duration=2` + `SPRAY_OFF`
     （**继电器吸合 2 秒后自动断开**）；`{"group":"g2"}` → `SKIP group=g2`（**片区隔离，继电器不动**）；
     `{"group":"g1","duration":60}` → 实际 `duration=5`（**安全钳制**）；空 body → 400、未知路径 → 404。
     ⚠️ **关键坑（已解）**：手机热点若处于「共享已连接的 WiFi / 桥接」模式，会把上游网络地址直接发给接入设备
-    （本次是校园网 `10.141.169.x`，DHCP 服务器 `10.141.169.143`）。此时节点用写死的 `192.168.43.61`
+    （网段由上游 DHCP 决定，不一定是热点网段）。此时节点用写死的 `192.168.43.61`
     会「`WIFI_OK` 但服务器 ping 不到、curl 超时」→ 已加 `USE_DHCP` 开关，两个节点 env 默认 `-DUSE_DHCP=1`，
-    **节点 IP 以串口打印的为准**，并同步填进 `SPRAY.http_targets`（现已填 `10.141.169.231`）。
+    **节点 IP 以串口打印的为准**，并同步填进 `SPRAY.http_targets`（按现场串口打印的 IP 填）。
     诊断口诀：看服务器从哪个 DHCP 服务器拿到地址 —— 手机当热点时应是 `x.x.x.1`，若是别的地址说明热点在桥接。
 - **Phase 2 双片区**：加 `http_node_g2`；验收 片区隔离 + 20 样本 180 秒内 + 实测时长与 `risk_map` 一致。
 - **Phase 3 BLE 冗余通道（两片区都要，Phase 1 之后再动）**：固件 `cg_ble.h`
