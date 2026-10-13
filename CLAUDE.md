@@ -48,17 +48,24 @@
 - AI 网关: llm/ai_gateway.py（**唯一 AI 出入口**：RAG 检索 → 接地提示词 → Ollama → 后校验）
 - 检索/防幻觉: llm/retriever.py（TF-IDF 字符 n-gram）、llm/kb_chunks.py、llm/guard.py
 - 接地提示词: prompts/templates/grounded_expert.txt（取代旧 1500 字"报告型"模板）
-- 手机端页面: serve/mobile.py（`GET /m`）；二维码: tool/qr_min.py；证书: tool/gen_cert.py
+- 手机端页面: serve/mobile.py（`GET /m`，含「🌫 雾化控制」卡片）；二维码: tool/qr_min.py；证书: tool/gen_cert.py
 - 信号反馈: feedback/feedback.py（播报语义）+ feedback/tts.py（**专用线程 + 多后端真校验**）
-- 喷淋控制: feedback/spray.py（serial/http/mqtt + stop）
+- 喷淋控制: feedback/spray.py（serial/http/mqtt + stop；http 目标分 `protocol: 'json'|'mist'`）
 - 硬件固件: ESP32/（PlatformIO 工程，8 个 env，见 ESP32/README.md）
 - 测试: tests/run_tests.py（内置迷你框架，零依赖；`python tests/run_tests.py`）
 - RAG 评测: scripts/ask_eval.py（库内召回 / 库外拒答 / 越权指令拦截）
 
 ## 启动方式
+- **解释器（本机实测）**：PATH 上的 `python` 是 3.12.10，**缺 cv2/torch，跑不了服务**；
+  能用的是 `py -3.14`（`D:\Dev Env\Python\python.exe`，torch **2.12.0+cpu、无 CUDA**）。
+  config 里 `MODEL.DEVICE: 'cuda:0'` → CPU 机器上必须覆盖：
+  `$env:CG_DEVICE='cpu'; py -3.14 api_server.py`（`app/state.py` 读 `CG_DEVICE` 环境变量，
+  所以**不用改配置**，GPU 机器上照旧走 `cuda:0`）。
 - GUI: 运行 main.py（PyCharm 或 `python main.py`）
-- Web + 手机端: `python api_server.py`（PC 首页 + `/m` 手机页 + REST/WS）；
+- Web + 手机端: `py -3.14 api_server.py`（PC 首页 + `/m` 手机页 + REST/WS）；
   手机"实时模式"再加 `--https`（HTTPS 8443，自签证书自动生成）
+- 启动横幅要确认三行：`Spray transport/http_targets`、`雾化节点(mist)=[...] 持续模式兜底=Ns`、
+  `手机会话页: http://<本机IP>:8080/m`（这个 IP 就是要填进手机浏览器的地址）
 - 训练: `python train_640.py`（新建）或 `python train_640.py --resume`（续训）
 - 喷淋联调: `python api_server.py`（**唯一**接 SprayController 的入口；GUI 只做语音+串口反馈）
 - 测试: `python tests/run_tests.py`；RAG 评测: `python scripts/ask_eval.py`（`--llm` 才真调大模型）
@@ -91,6 +98,24 @@
    语音后端**必须做"真出声"校验**，不能只看对象是否创建成功；
 6. 相机"设备不在"是常态（硬件没配齐），所有相机相关入口都要能在无设备时给出可读原因，不能抛异常。
 
+
+## 手写 sketch 雾化接入（2026-10-12 · 已实现并实测）
+用户自写的 Arduino 固件 `sketch_oct12a.ino`（继电器 GPIO22 + 模拟雾化板按键 GPIO23，
+接手机热点 `vivoX300`）接口与项目 PlatformIO 固件不同。**服务器侧做协议适配，手机页经服务器控制**——
+不改动已烧录的固件，也不让手机直连节点（沿用"节点只接受服务器指令"的拓扑）。
+
+| 项 | 落点 | 说明 |
+| --- | --- | --- |
+| 接口协议 | `feedback/spray.py`（target 项 `protocol: 'json'\|'mist'`） | `mist` = `GET /start?time=N`（定时）/ `GET /startDirect`（持续）/ `GET /stop`；`json` = 项目固件 `POST /spray` + `POST /stop` |
+| **"永远回 200"** | 同上 `_write_mist` | 该固件连"雾化正在运行中，请先关闭！"也回 200 → **必须读响应体判成败**，只看状态码会把"拒绝启动"当成功 |
+| 持续模式兜底 | 同上 `_arm_direct_timer` / `_direct_timeout` | `/startDirect` 固件不自停 → 服务器 `SPRAY.direct_max_sec`（默认 **300s**）到点自动 `/stop`；人工停止、成功的定时喷雾都会撤掉计时器 |
+| 节点寻址 | `SPRAY.http_targets` + `SPRAY.status_timeout` | 每项可写 `protocol`；mist 固件**无分组过滤**（片区隔离靠 IP 寻址），地址是占位 `192.168.43.61/62`，按节点串口打印的 IP 改 |
+| 手机页 | `serve/templates/mobile.html` + `static/mobile.js` 的「🌫 雾化控制」卡片 | 定时喷雾（上限 5s，后端再钳）/ 持续喷雾（确认框写明兜底秒数）/ 停止 / 每 3s 拉状态显示「定时模式 剩余 Ns、持续模式（兜底 Ns）、空闲、离线+原因」/ 节点自带页面链接 |
+| REST | `GET /api/mist/status`、`POST /api/mist/start`、`/api/mist/direct`、`/api/mist/stop` | 都用**普通 `def`**（FastAPI 丢线程池），不阻塞推理/推流事件循环 |
+| 测试 | `tests/test_mist_protocol.py`（26 条） | 用**真 loopback HTTP 假节点**复刻固件脾气：钳制、"200 但拒绝"、兜底自动停、计时器撤销、json 协议回归、手机页渲染 |
+
+既有入口同样能驱动 mist 节点：`POST /api/spray`（手机页 A/B 区按钮）、语音指令 `POST /api/ask_command`
+与自动联动 `risk_map` 都按目标协议分派（对 mist 节点就是"定时喷雾 N 秒"语义）。
 
 ## 当前路线（2026-10-08 对齐 · 清理后重定）
 主线：**先跑通单节点闭环，再扩面**。功能按"能不能现场演示"排序，不按"功能多少"排序。

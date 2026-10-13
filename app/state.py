@@ -29,7 +29,9 @@ cfg_model = config.MODEL
 weights_path = cfg_model.WEIGHT
 conf_thres = float(cfg_model.CONF)
 imgsz = int(cfg_model.IMGSIZE)
-device = cfg_model.DEVICE
+# 设备可用环境变量临时覆盖（config 里通常写死 'cuda:0'）：
+#   CPU-only 机器上用  $env:CG_DEVICE='cpu'  起服务，就不用改配置（也不会误提交 CPU 配置）
+device = str(os.environ.get('CG_DEVICE') or cfg_model.DEVICE)
 chinese_name = config.get('CONFIG', {}).get('chinese_name', {})
 
 # ---------------------------------------------------------------- 模型加载
@@ -85,8 +87,15 @@ spray = SprayController(
     http_timeout=float(cfg_spray.get('http_timeout', 1.0) or 1.0),
     mqtt=cfg_spray.get('mqtt', {}) or {},
     max_duration=int(cfg_spray.get('max_duration', 5) or 5),
+    default_protocol=str(cfg_spray.get('default_protocol', 'json') or 'json'),
+    direct_max_sec=cfg_spray.get('direct_max_sec', 300),
+    status_timeout=float(cfg_spray.get('status_timeout', 1.5) or 1.5),
 )
-print(f"[INFO] Spray transport={spray.transport} available={spray.available}")
+_protocols = {g: spray.protocol_of(g) for g in spray.http_targets}
+print(f"[INFO] Spray transport={spray.transport} available={spray.available} "
+      f"protocols={_protocols}")
+print(f"[INFO] 雾化节点(mist)={[t['url'] for t in spray.mist_targets()]} "
+      f"持续模式兜底={spray.direct_max_sec}s")
 
 # ---------------------------------------------------------------- 摄像头源解析（多路片区方案 + 单摄回退）
 cfg_cameras = config.get('CONFIG', {}).get('cameras') or []

@@ -295,13 +295,20 @@ async def qr_image(url: str = None, size: int = 6):
 
 @app.get("/m", response_class=HTMLResponse)
 async def mobile_home(request: Request):
-    """手机会话页：拍照识别 / 实时识别 / 问答 / 喷洒控制。"""
+    """手机会话页：拍照识别 / 实时识别 / 问答 / 喷洒控制 / 雾化控制（ESP32 直连）。"""
     host = (request.url.hostname or '')
     http_port, https_port = _phone_ports(request.url.port)
+    mist_url = ''
+    mist_targets = spray.mist_targets()
+    if mist_targets:
+        mist_url = str(mist_targets[0].get('url') or '')
     html = mobile_page.render(
         host=host, http_port=http_port, https_port=https_port,
         frame_interval_ms=int(_cfg_phone.get('frame_interval_ms', 400) or 400),
         upload_max_side=int(_cfg_phone.get('upload_max_side', 960) or 960),
+        mist_url=mist_url,
+        mist_max_sec=int(cfg_spray.get('max_duration', 5) or 5),
+        mist_direct_sec=int(spray.direct_max_sec or 0),
     )
     return HTMLResponse(html)
 
@@ -444,6 +451,76 @@ async def manual_spray(payload: dict):
         "duration": duration,
         "max_duration": max_duration,
     }
+
+
+# ==================== 雾化控制（手写 sketch 固件接口） ====================
+# 手写固件（sketch_oct12a.ino）的接口与项目固件不同：
+#   GET /start?time=N 定时喷雾 / GET /startDirect 持续喷雾（不自停）/ GET /stop 停止
+# 而且它**永远回 200**（连"雾化正在运行中，请先关闭"也是 200），所以适配层读响应体判成败
+# （见 feedback/spray.py 的 _write_mist）。
+#
+# ⚠️ 这几个端点刻意用**普通 def**：内部会同步访问节点 HTTP，FastAPI 会把它丢进线程池，
+#    不会阻塞事件循环把推理/推流一起拖慢（与 /api/ask 同一个理由）。
+
+@app.get("/api/mist/status")
+def mist_status(group: str = None):
+    """读回雾化节点状态（GET 节点的状态页并解析"定时/持续/空闲"与剩余秒数）。
+
+    连不上时**如实返回 reachable=false + 原因**，不静默（现场排查靠它）。
+    """
+    try:
+        return {"success": True, **spray.mist_status(group or "all")}
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(status_code=500, content={
+            "success": False, "error": f"{type(exc).__name__}: {exc}"})
+
+
+@app.post("/api/mist/start")
+def mist_start(payload: dict):
+    """定时喷雾：body {"seconds": 3, "group": "all"}。
+
+    seconds 由后端按 SPRAY.max_duration 钳制（雾化片怕连续通电），返回里带 clamped 标记。
+    """
+    payload = payload or {}
+    group = str(payload.get("group") or "all")
+    try:
+        seconds = int(payload.get("seconds", payload.get("duration", 3)))
+    except (TypeError, ValueError):
+        seconds = 3
+    res = spray.mist_start(seconds, group)
+    if res.get("success"):
+        _record_history('雾化·定时', [], group=group, duration=res.get("duration") or 0,
+                        source='mist', via='phone-mist')
+    return {"success": bool(res.get("success")), **res}
+
+
+@app.post("/api/mist/direct")
+def mist_direct(payload: dict = None):
+    """持续喷雾（固件的 /startDirect 不会自停）。
+
+    服务器武装兜底计时器，SPRAY.direct_max_sec 秒后自动 GET /stop ——
+    手机掉线、页面被关掉、人走开都不会让继电器一直吸合。
+    """
+    payload = payload or {}
+    group = str(payload.get("group") or "all")
+    res = spray.mist_start_direct(group)
+    if res.get("success"):
+        _record_history('雾化·持续', [], group=group, duration=None,
+                        source='mist', via='phone-mist')
+    return {"success": bool(res.get("success")), **res}
+
+
+@app.post("/api/mist/stop")
+def mist_stop(payload: dict = None):
+    """停止雾化（同步等结果，并撤掉持续模式兜底计时器）。"""
+    payload = payload or {}
+    group = str(payload.get("group") or "all")
+    res = spray.mist_stop(group)
+    if res.get("success"):
+        _record_history('雾化·停止', [], group=group, duration=None,
+                        source='mist', via='phone-mist')
+    return {"success": bool(res.get("success")), **res}
 
 
 @app.get("/api/camera/health")

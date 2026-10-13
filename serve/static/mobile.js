@@ -264,6 +264,94 @@ async function manualSpray(group, duration) {
   refreshHistory();
 }
 
+// ==================== 雾化控制（ESP32 直连） ====================
+// 对应手写固件 sketch_oct12a.ino 的接口：GET /start?time=N、GET /startDirect、GET /stop。
+// 手机不直连节点：这里的每个动作都发给服务器，由服务器（feedback/spray.py 的 mist 协议适配）
+// 下发到节点 —— 这样手机换网络、节点换 IP 都不影响，而且能留历史。
+const MIST_URL = "__MIST_URL__";
+const MIST_MAX_SEC = __MIST_MAX_SEC__;
+const MIST_DIRECT_SEC = __MIST_DIRECT_SEC__;
+const MIST_MODE_TEXT = {timed: '定时模式', direct: '持续模式', idle: '空闲', unknown: '运行中'};
+
+if (MIST_URL) {
+  $('mistNodeLink').href = MIST_URL.replace(/\/+$/, '') + '/';
+} else {
+  $('mistNodeLink').removeAttribute('href');
+  $('mistNodeLink').textContent = '（未配置 mist 节点）';
+}
+$('mistSec').max = MIST_MAX_SEC;
+$('mistMaxSec').textContent = MIST_MAX_SEC;
+$('mistDirectSec').textContent = MIST_DIRECT_SEC > 0 ? MIST_DIRECT_SEC : '未启用';
+
+function mistHint(text, ok) {
+  const el = $('mistState');
+  el.className = 'risk ' + (ok === false ? 'high' : 'none');
+  el.textContent = text;
+}
+
+async function mistStart() {
+  const sec = parseInt($('mistSec').value, 10) || 3;
+  mistHint('正在下发定时喷雾…', null);
+  try {
+    const d = await post('/api/mist/start', {seconds: sec, group: 'all'});
+    mistHint(d.success
+      ? '✅ 已启动定时喷雾 ' + d.duration + ' 秒' + (d.clamped ? '（已按上限钳制）' : '')
+      : '⚠ 未启动：' + (d.error || '节点未响应'), !!d.success);
+  } catch (e) { mistHint('⚠ 请求失败：' + e.message, false); }
+  refreshMist();
+  refreshHistory();
+}
+
+async function mistDirect() {
+  const cap = MIST_DIRECT_SEC > 0
+    ? '服务器会在 ' + MIST_DIRECT_SEC + ' 秒后自动停止'
+    : '服务器不做兜底，必须手动点「停止雾化」';
+  if (!confirm('确认开启持续喷雾？\n' + cap + '。')) return;
+  mistHint('正在下发持续喷雾…', null);
+  try {
+    const d = await post('/api/mist/direct', {group: 'all'});
+    mistHint(d.success ? '✅ 持续喷雾已开启（' + cap + '）'
+                       : '⚠ 未开启：' + (d.error || '节点未响应'), !!d.success);
+  } catch (e) { mistHint('⚠ 请求失败：' + e.message, false); }
+  refreshMist();
+  refreshHistory();
+}
+
+async function mistStop() {
+  mistHint('正在停止…', null);
+  try {
+    const d = await post('/api/mist/stop', {group: 'all'});
+    mistHint(d.success ? '⏹ 已停止雾化' : '⚠ 停止失败：' + (d.error || '节点未响应'), !!d.success);
+  } catch (e) { mistHint('⚠ 请求失败：' + e.message, false); }
+  refreshMist();
+  refreshHistory();
+}
+
+async function refreshMist() {
+  if (document.hidden) return;                 // 页面在后台就别去轮询节点了
+  try {
+    const r = await fetch(API_BASE + '/api/mist/status?group=all');
+    const data = await r.json();
+    if (!data.success) { mistHint('⚠ 状态读取失败：' + (data.error || ''), false); return; }
+    const nodes = data.nodes || [];
+    if (!nodes.length) {
+      mistHint('未配置雾化节点：在 SPRAY.http_targets 里加一项 protocol: mist', false);
+      return;
+    }
+    const parts = nodes.map(n => {
+      const addr = String(n.url || '').replace(/^https?:\/\//, '');
+      if (!n.reachable) return addr + ' 离线（' + (n.error || '不可达') + '）';
+      let s = addr + ' · ' + (MIST_MODE_TEXT[n.mode] || n.mode || '--');
+      if (n.remain != null) s += ' 剩余 ' + n.remain + 's';
+      if (n.direct_remaining != null) s += '（兜底 ' + n.direct_remaining + 's 后停）';
+      return s;
+    });
+    const anyUp = nodes.some(n => n.reachable);
+    const running = nodes.some(n => n.reachable && n.running);
+    mistHint('节点状态：' + parts.join('；'), anyUp && !running ? true : (anyUp ? null : false));
+  } catch (e) {}
+}
+
 // ==================== 历史 ====================
 async function refreshHistory() {
   try {
@@ -273,9 +361,12 @@ async function refreshHistory() {
     const el = $('histList');
     if (!list.length) { el.innerHTML = '<div class="empty">暂无记录</div>'; return; }
     el.innerHTML = list.map(h => {
-      const tag = h.source === 'manual' ? 'manual' : clsOfRisk(h.risk);
+      const tag = h.source === 'manual' ? 'manual'
+                : (h.source === 'mist' ? 'mist' : clsOfRisk(h.risk));
       const label = h.source === 'manual' ? '手动' : (h.risk || '');
-      const act = h.group ? ' → ' + (h.group === 'all' ? '全体' : h.group) + ' 喷 ' + h.duration + 's' : '';
+      const act = h.group
+        ? ' → ' + (h.group === 'all' ? '全体' : h.group) + (h.duration ? ' 喷 ' + h.duration + 's' : '')
+        : '';
       const det = (h.detections && h.detections.length) ? '<br>' + escapeHtml(h.detections.join('、')) : '';
       return '<div class="hist"><span class="tag ' + tag + '">' + escapeHtml(label) + '</span>' +
              escapeHtml(h.ts || '') + escapeHtml(act) + det + '</div>';
@@ -294,7 +385,10 @@ async function refreshHistory() {
   }
   refreshHistory();
   setInterval(refreshHistory, 4000);
+  refreshMist();
+  setInterval(refreshMist, 3000);
   document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshMist();
     if (document.hidden && mode === 'live') stopLive();
   });
 })();

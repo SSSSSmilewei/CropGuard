@@ -81,6 +81,25 @@
   <div class="hint" id="sprayHint">雾化片单次上限 5 秒，后端与固件都会再钳一次。</div>
 </div>
 
+<!-- ==================== 三点五、雾化控制（ESP32 直连·手写 sketch 接口） ==================== -->
+<div class="card">
+  <h3>🌫 雾化控制（ESP32 直连）</h3>
+  <div class="row">
+    <input type="number" id="mistSec" value="3" min="1" step="1">
+    <button onclick="mistStart()">⏱ 定时喷雾</button>
+  </div>
+  <div class="row">
+    <button class="warn" onclick="mistDirect()">♾ 持续喷雾</button>
+    <button class="danger" onclick="mistStop()">⏹ 停止雾化</button>
+  </div>
+  <div class="risk none" id="mistState">节点状态：读取中…</div>
+  <div class="hint">
+    单次上限 <b id="mistMaxSec">5</b> 秒（后端按 SPRAY.max_duration 再钳一次）；
+    持续喷雾由服务器兜底 <b id="mistDirectSec">300</b> 秒后自动停止。
+    <a id="mistNodeLink" href="#" target="_blank" rel="noopener" style="color:#a5d6a7">打开节点自带页面</a>
+  </div>
+</div>
+
 <!-- ==================== 四、历史 ==================== -->
 <div class="card">
   <h3>🕘 联动 / 喷淋历史</h3>
