@@ -43,14 +43,18 @@ def fake_engine():
 
     注意：TTSEngine 初始化时会用一句空串做"真链路校验"，
     所以这里先丢掉那条记录，让用例从干净的 sink 开始。
+
+    坑：后端构建入口已从旧的 `tts._build_backend` 收敛到 `BackendRegistry.build`
+    （见 feedback/tts.py 的注册表重构）。fixture 必须跟着改，
+    否则整组语音用例会在夹具阶段 AttributeError 直接失败（与 TTS 逻辑无关）。
     """
     sink = []
-    original = tts_mod._build_backend
+    original = tts_mod.BackendRegistry.build
 
-    def _build(prefer='auto'):
-        return _FakeBackend(sink), [], []
+    def _build(self, rate, volume, selftest=True):
+        return _FakeBackend(sink), 'fake', []
 
-    tts_mod._build_backend = _build
+    tts_mod.BackendRegistry.build = _build
     eng = TTSEngine(enabled=True, engine='auto')
     TTSEngine.wait_backend(eng, timeout=3)
     time.sleep(0.2)
@@ -59,7 +63,7 @@ def fake_engine():
         yield eng, sink
     finally:
         eng.close()
-        tts_mod._build_backend = original
+        tts_mod.BackendRegistry.build = original
 
 
 @test_case

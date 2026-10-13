@@ -20,11 +20,14 @@ def _read_file(*parts):
 
 
 def render(host, http_port, https_port=None, frame_interval_ms=400, upload_max_side=960,
-           mist_url='', mist_max_sec=5, mist_direct_sec=300):
+           mist_url='', mist_max_sec=5, mist_direct_sec=300, https_enabled=False):
     """把占位符替换成现场实际参数，返回可直接由服务端返回的 HTML。
 
     mist_*: 「雾化控制」卡片用 —— 节点地址（节点自带状态页链接）、单次时长上限、
             持续喷雾的服务器兜底秒数。
+    https_enabled: HTTPS 监听**是否真的在服务**（不是配置里写了 8443）。
+        为真时手机页会先探测一次 https 再自动升级（http/https 合成同一个页面）；
+        为假时页面绝不渲染 https 链接（避免给出打不开的死链）。
     """
     html = _read_file('templates', 'mobile.html')
     css = _read_file('static', 'mobile.css')
@@ -32,6 +35,7 @@ def render(host, http_port, https_port=None, frame_interval_ms=400, upload_max_s
 
     js = js.replace('__HTTP_PORT__', str(http_port))
     js = js.replace('__HTTPS_PORT__', str(https_port or (int(http_port) + 360)))
+    js = js.replace('__HTTPS_ENABLED__', 'true' if https_enabled else 'false')
     js = js.replace('__HOST__', host or '127.0.0.1')
     js = js.replace('__FRAME_INTERVAL__', str(int(frame_interval_ms or 400)))
     js = js.replace('__UPLOAD_MAX_SIDE__', str(int(upload_max_side or 960)))

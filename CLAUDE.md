@@ -7,7 +7,7 @@
 - 本项目仓库(开源): https://github.com/Sun-0810-yh/CropGuard（公开，含 best.pt，数据集未上传）
   - ⚠️ 2026-10-08 清理删掉了被 git 跟踪的 runs/train/pest27_final4/weights/best.onnx（与 睿抗国赛项目—农智云/best.onnx 同一份）。要恢复公开仓库里的 ONNX：`git restore runs/train/pest27_final4/weights/best.onnx`，或对比赛目录那份 `git add -f`
 - 测试子仓库(公开，可独立克隆运行): https://github.com/Sun-0810-yh/CropGuard_Test
-  - 内容 = `tests/`(迷你框架+60用例) + `scripts/ask_eval.py` + 被测模块(`feedback/ llm/ tool/ config/ prompts/ main.py`)；
+  - 内容 = `tests/`(迷你框架，当前 171 条用例) + `scripts/ask_eval.py` + 被测模块(`feedback/ llm/ tool/ config/ prompts/ main.py`)；
     不含权重/数据集/`serve/`；本地源在 `_dist/CropGuard_Test/`（已加进主仓库 .gitignore）
   - 缺 `ultralytics`/`PyQt5` 时 `test_gui_adapter_has_full_interface` 走 `requires()` → SKIP（59 passed + 1 skipped，退出码 0）
 
@@ -32,7 +32,19 @@
 
 ## 训练状态 (当前)
 - 最佳模型: runs/train/pest27_final4/weights/best.pt
-- mAP@0.5: 76.0%（8类>95%）
+- mAP@0.5: 76.0%（整体 mAP50=0.7601 / mAP50-95=0.4899，precision=0.692 / recall=0.765）
+- **每类 mAP50 ≥ 95% 的 8 类**（2026-10-13 复验，脚本 `scripts/per_class_val.py`，报告 `output/per_class_val_20261013_120802.md`）:
+  | 类别(EN) | 中文 | mAP50 |
+  | --- | --- | --- |
+  | Lycorma_delicatula | 斑衣蜡蝉 | 0.995 |
+  | mole_cricket | 蝼蛄 | 0.9946 |
+  | Cicadellidae | 叶蝉科 | 0.9856 |
+  | rice_leaf_roller | 水稻卷叶螟 | 0.9842 |
+  | Potosiabre_vitarsis | 光肩星天牛（KB 口径） | 0.9803 |
+  | flea_beetle | 跳甲 | 0.9715 |
+  | grub | 蛴螬 | 0.9627 |
+  | Ampelophaga | 葡萄天蛾 | 0.9506 |
+- 中英文全表: `docs/27类中英文对照.md`；真实样本测试集: `real_testset20/`（20 张，实测 Top1 20/20）
 - ONNX: 睿抗国赛项目—农智云/best.onnx（640，平台可用；runs 下的重复副本已于 2026-10-08 删除，两份 SHA256 相同）
 - 续训: python train_640.py --resume
 
@@ -49,6 +61,8 @@
 - 检索/防幻觉: llm/retriever.py（TF-IDF 字符 n-gram）、llm/kb_chunks.py、llm/guard.py
 - 接地提示词: prompts/templates/grounded_expert.txt（取代旧 1500 字"报告型"模板）
 - 手机端页面: serve/mobile.py（`GET /m`，含「🌫 雾化控制」卡片）；二维码: tool/qr_min.py；证书: tool/gen_cert.py
+- 演示看板: serve/pages/dashboard.html（`GET /dashboard`；**数据是内联快照，可 file:// 离线单文件打开**，
+  由 scripts/build_dashboard.py 从真实产物生成，**只改写 `CG-SNAPSHOT` 标记区**；页面只读不碰硬件写接口）
 - 信号反馈: feedback/feedback.py（播报语义）+ feedback/tts.py（**专用线程 + 多后端真校验**）
 - 喷淋控制: feedback/spray.py（serial/http/mqtt + stop；http 目标分 `protocol: 'json'|'mist'`）
 - 硬件固件: ESP32/（PlatformIO 工程，8 个 env，见 ESP32/README.md）
@@ -62,10 +76,13 @@
   `$env:CG_DEVICE='cpu'; py -3.14 api_server.py`（`app/state.py` 读 `CG_DEVICE` 环境变量，
   所以**不用改配置**，GPU 机器上照旧走 `cuda:0`）。
 - GUI: 运行 main.py（PyCharm 或 `python main.py`）
-- Web + 手机端: `py -3.14 api_server.py`（PC 首页 + `/m` 手机页 + REST/WS）；
-  手机"实时模式"再加 `--https`（HTTPS 8443，自签证书自动生成）
-- 启动横幅要确认三行：`Spray transport/http_targets`、`雾化节点(mist)=[...] 持续模式兜底=Ns`、
-  `手机会话页: http://<本机IP>:8080/m`（这个 IP 就是要填进手机浏览器的地址）
+- Web + 手机端: `py -3.14 api_server.py`（PC 首页 + 看板 `/dashboard` + `/m` 手机页 + REST/WS）；
+  **HTTPS 默认同开**（8443，自签证书自动生成/按当前 IP 自动重签），纯 HTTP 加 `--no-https`；`--https` 保留兼容
+- 看板刷新快照: `py -3.14 scripts/build_dashboard.py`（默认带 20 张缩略图；`--no-thumbs` 产物更小）
+- 启动横幅要确认：`Spray transport/http_targets`、`雾化节点(mist)=[...] 持续模式兜底=Ns`、
+  `[CERT] ✅ SAN 已覆盖当前局域网 IP: X`、`手机会话页(唯一入口): https://<本机IP>:8443/m`
+  （**手机端唯一地址**：http 打开会自动升到这里，`?http=1` 强制留在 HTTP 拍照模式；
+  HTTPS 没起来时页面不会给 https 死链，并在横幅写明原因）
 - 训练: `python train_640.py`（新建）或 `python train_640.py --resume`（续训）
 - 喷淋联调: `python api_server.py`（**唯一**接 SprayController 的入口；GUI 只做语音+串口反馈）
 - 测试: `python tests/run_tests.py`；RAG 评测: `python scripts/ask_eval.py`（`--llm` 才真调大模型）
@@ -82,7 +99,7 @@
 | RAG（原待定项→已做） | `llm/kb_chunks.py` + `llm/retriever.py` + `scripts/ask_eval.py` | 110 片段 / 27 类 / 61 别名；评测：库内召回 20/20、库外拒答 10/10、越权拦截 4/4 |
 | 手机实时+拍照 | `serve/mobile.py`（`/m`）+ `WS /ws/phone` | 二进制帧上传实测 0.15s 回检测 JSON；拍照档纯 HTTP 可用（`capture` 不需要 HTTPS） |
 | 手机提问 → 控制喷洒 | `POST /api/ask_command`（**只解析**）→ 人工确认 → `/api/spray` | 危险词拦截、"100 秒"钳到 5 秒、未指定片区拒绝；大模型绝不直接驱动硬件 |
-| 测试 | `tests/`（迷你框架）+ `scripts/ask_eval.py` | 60 用例全绿（约 38 秒）；ask_eval 三项 100% |
+| 测试 | `tests/`（迷你框架）+ `scripts/ask_eval.py` | 171 用例全绿（`py -3.14 tests/run_tests.py`，退出码 0）；ask_eval 三项 100% |
 
 ### 这一批踩过的坑（下次别重踩）
 1. `python tests/run_tests.py` 时 runner 是 `__main__`，测试里 `from run_tests import ...` 是**另一个模块实例**
@@ -116,6 +133,59 @@
 
 既有入口同样能驱动 mist 节点：`POST /api/spray`（手机页 A/B 区按钮）、语音指令 `POST /api/ask_command`
 与自动联动 `risk_map` 都按目标协议分派（对 mist 节点就是"定时喷雾 N 秒"语义）。
+
+## 演示数据看板（2026-10-13 · 已实现并实测）
+答辩/PPT 用的一屏看板，**两种形态同一份页面**：file:// 双击看内联快照（零联网请求），
+经服务器打开则自动升为实时态（同源轮询 `/api/*`，实时画面按需订阅 `/ws/stream`）。
+
+| 项 | 落点 | 说明 |
+| --- | --- | --- |
+| 页面 | `serve/pages/dashboard.html` + `api_server.py: GET /dashboard` | 快照 JSON 内联在 `CG-SNAPSHOT` 标记区；手写的结构/样式/脚本在标记区之外 |
+| 生成器 | `scripts/build_dashboard.py` | 只改写标记区；来源：`output/per_class_val_*.json`、`runs/train/pest27_final4/results.csv`、`real_testset20/eval_*.json`、`dataset_full`、`llm/knowledge_base.PEST_KB`、`config/configs.yaml` |
+| 内容 | — | KPI 卡 / Loss+mAP 收敛曲线（Canvas 手绘）/ 27 类 mAP50 条形（≥0.95 加★）/ 20 张实测（缩略图内嵌 data URI）/ 闭环与 RAG 口径 / 硬件拓扑 / 实时状态卡 + 实时画面 + 图片快检 + 喷淋历史 |
+| 离线合规 | 无 CDN、无图表库、无外部脚本；唯一的 http 链接是 `127.0.0.1:8080` 回环（快照态提示"进入实时模式"） | 测试里硬性拦截外部依赖 |
+| 安全边界 | **只读**：不提供喷淋/雾化启停按钮；唯一的 POST 是 `/api/detect` 图片快检 | 演示时不会误触发硬件 |
+| 测试 | `tests/test_dashboard.py`（8 条） | 快照必须等于真实产物、离线合规、无写接口、路由已注册、生成器不动手写区、内嵌 JS 能解析 |
+
+### 踩过的坑（别再重踩）
+1. **可访问性/可达性**：file:// 下 `fetch('/api/health')` 必然失败（跨域）→ 快照态；
+   实时态**必须同源**（经 `/dashboard` 访问），所以刻意**不加 CORS 中间件**（不为演示放开 `origin: null`）。
+2. **快照里带点的 key 不能在 JS 里点出来**：`ge_0.95_count` 写成 `o.ge_0.95_count` 是**语法错误**，
+   整个 IIFE 不执行 → 页面只剩静态外壳（KPI/曲线/20 张样本全空），而 CSS 看着一切正常，极易误判成"数据没生成"。
+   → 用 `o['ge_0.95_count']`；并且加了 `node --check` 的内嵌 JS 语法用例（没装 node 就 SKIP）。
+3. **CV2 读中文路径**：`cv2.imread` 在 Windows 读不了 `01_光肩星天牛-….jpg` → 缩略图必须
+   `np.fromfile` + `cv2.imdecode`。
+4. **实时画面别自动开**：GUI（main.py）与服务器是两个进程，各自占同一台 USB 相机；
+   看板只在用户点按钮时才订阅 `/ws/stream`，避免演示时互相抢设备。
+5. **无相机是常态**：服务端要跑完 DSHOW 多策略探测（约 10 秒）才回 `{"error": ...}`，
+   所以按钮文案直接写明"无设备时约 10 秒后给原因"，页面照样给出可读原因（不白屏、不静默）。
+6. 快照口径与 `CLAUDE.md`「训练 11,876」不一致：目录实测图/标注均为 **11,948 / 2,046**，看板显示实测值。
+
+## 手机端 http/https 合一（2026-10-13 · 已实现并实测）
+**现场故障**：`api_server.py` 没加 `--https` → 8443 根本没监听，而 `/m` 页面照样渲染
+`https://<IP>:8443/m` 链接（`/api/lan` 也照给）→ 手机点进去打不开；即使 `--https` 起来，
+证书 SAN 里是**旧网段** IP（手机报"证书名称不符"），且 https 页里 `API_BASE` 指向
+`http://host:8080` → 浏览器按**混合内容**把 fetch 整块拦掉（detect/ask/mist/history/health 全废，
+只有 wss 能通）→ https 页看起来像"另一个坏掉的页面"。
+
+| 项 | 落点 | 说明 |
+| --- | --- | --- |
+| 唯一入口 | `api_server.py` + `serve/static/mobile.js` | **HTTPS 默认同开**（`--no-https` 关，`--https` 兼容保留，`--reload` 下默认不开）；http 打开 `/m` 先 no-cors 探测 https，可用才 `location.replace` 升级，不可用就留在 HTTP 页给可点链接（不会跳进打不开的页面，也没有"返回又跳回"的死循环）；`?http=1` 强制留 HTTP |
+| 接口同源 | `serve/static/mobile.js` | `const API_BASE = ""` —— **永远同源**。别再写回 `"http://"+hostname+":8080"`：HTTPS 页里那是混合内容，浏览器必拦 |
+| 不出死链 | `_srv_ports['https_on']` → `render(https_enabled=…)` / `/api/lan.https_enabled` / `phone_urls_https`（未启用返回 `[]`） | 只有 HTTPS 线程**真的 started 且自检通过**才算 true；false 时页面不渲染 https 链接，横幅写明原因 |
+| 就绪自检 | `api_server.py: _port_busy / _start_https / _https_selfcheck` | 端口 preflight（被占则报 PID + `tool/port_check.py --kill`）→ 起线程等 `server.started`（≤8s）→ 用 `_create_unverified_context()` 真请求 `/api/health`；任一步失败即关掉监听，绝不留"8443 在听但状态说没开" |
+| 证书跟着 IP 走 | `tool/gen_cert.py` | `needs_refresh_from_info()`（纯函数，好单测）判断 SAN 是否覆盖**当前**所有局域网 IP / 是否临近过期，不覆盖就自动重签；生成优先 `cryptography`（py3.14 自带 49），缺失走 openssl（`find_openssl()` 已按 `sys.executable` / `CONDA_PREFIX` 推导，命中 `…\envs\pest-gpu\Library\bin\openssl.exe`）；`api_server.py --cert-extra-ip` 可手工补 IP |
+| 入口可视化 | `serve/pages/index.html` + `GET /qr` | PC 首页新增「手机端入口」卡片：地址+二维码取自 `/api/lan` 的 `phone_url`（HTTPS 可用即 https），不用手输 IP |
+| 实时画面叠框 | `serve/static/mobile.js`（`drawDetections` / `fitRect` / `boxToViewRect`）+ `mobile.html` 的 `#liveCanvas` | `/ws/phone` **只回检测 JSON**（省流量），框由手机页 canvas 自己画 —— 这是后端早就写在 docstring 里的约定，之前前端没实现，所以"实时没有框"。bbox 是上传那一帧的像素坐标，映射时要减掉 `object-fit:contain` 的黑边；`sentFrame` 记下每次发送的帧尺寸 |
+| 实时卡片 | 同上 | 画面比例按摄像头真实比例自适应（去 4:3 黑边）、双击/按钮放大、前后摄像头切换、显示检测框开关、截图(带框)保存、断线指数退避自动重连(≤6 次)、状态小面板（目标/风险/服务端耗时/往返/FPS）、检测列表按置信度降序 + 进度条 |
+| 测试 | `tests/test_phone_https.py`（14 条） | 同源 API、占位符无泄漏、https 开/关两种渲染、内嵌 JS `node --check`、SAN 覆盖纯判断、真生成证书、重签/复用、服务端契约、PC 首页元素；另有两条 **node 运行时**用例：`CG-GEOMETRY` 段数值校验，以及给 `mobile.js` 打极简 DOM/canvas 桩后跑真实 `drawDetections()`，断言 `strokeRect` 坐标/标签文字/0 目标不画/关框不画（现场没浏览器自动化，这是唯一能自动守住"叠框"链路的办法） |
+
+### 踩过的坑（别再重踩）
+1. **同源是唯一解**：HTTP 页与 HTTPS 页是不同 origin，https 页只能调 https 接口。"共用一个页面" = **同源 API + http 入口自动升级**，绝不能让 https 页去调 8080（混合内容必被拦）。
+2. 一个端口只能是 TLS **或**明文：`--https-port` 与 `--port` 相同必须**启动即报错**（已加）。
+3. 证书 SAN 没写手机在用的那个 IP，手机上就是"证书名称不符"；`ensure_cert` 原来"文件存在就复用"，换网段后必炸 → 现在按 SAN 覆盖自动重签（重启服务即可）。
+4. `curl.exe` 在本机沙箱里做 HTTPS 客户端会报 `schannel: SEC_E_NO_CREDENTIALS`（客户端凭据问题，不是服务端）→ 验证 HTTPS 用 `py -3.14 -c "…urllib + ssl._create_unverified_context…"` 或手机浏览器。
+5. 内嵌 JS 少一个 `)`（`new Promise(` 忘了闭合）会让整段脚本不执行、页面只剩外壳 → `test_mobile_inline_js_parses` 用 `node --check` 挡住。
 
 ## 当前路线（2026-10-08 对齐 · 清理后重定）
 主线：**先跑通单节点闭环，再扩面**。功能按"能不能现场演示"排序，不按"功能多少"排序。
@@ -187,6 +257,36 @@ BLE 走 **服务器 → 节点**（Python `bleak`），**不做手机直连节�
 - 明确不做：MQTT、OTA、ESP32-CAM 图像采集、旋转机构、WiFiManager 配网门户、升级 ultralytics
 
 外部阻塞：`CropGuard/`（另一会话进程占用，删不掉）。
+
+## 真实样本测试集（2026-10-13 · 已建并实测）
+- **目录**: `real_testset20/`（20 张，命名 `NN_中文名-英文类_confX.XX.jpg`；`manifest.csv` + `README.md` 一并生成）
+- **选样脚本**: `scripts/pick_real_testset.py` —— 从 `competition_all_sorted/`（1808 张、文件名自带置信度）
+  每类取本类置信度最高的一张，按置信度降序取前 N，中文类别不重复；`--dry-run` 只看不复制
+- **测样脚本**: `scripts/eval_real_testset.py` —— 逐张推理，出 `eval_<时间戳>.csv/.json`（含每张耗时，可核对 180 秒）
+- **实测**: best.pt + imgsz=640 + CPU(无 CUDA)：Top1 **20/20**、平均 **112 ms/张**（机器空闲；同机并发时约 240 ms）、
+  20 张共 2.2 s；置信度与文件名里记录的一致（0.78–0.95），**未被相纸打印/摄像头退化**（这是"数据集实拍图"，不是现场翻拍）
+- 中英文类别全表: `docs/27类中英文对照.md`
+- ⚠️ **标签噪声（重要，实测踩到）**: 挑出来的最高置信度样本里有肉眼可见的错标，例：
+  - `06_蝗虫-Locustoidea_conf0.88.jpg` 画面是**绿色盲蝽(半翅目)**，与蝗虫（直翅目）不符 —— 模型跟着学错了
+    （旁证：该类 val mAP50 只有 **0.6586**，而它却能给这张 0.88）
+  - `01_光肩星天牛-Potosiabre_vitarsis_conf0.95.jpg` 的形态更像**花金龟类**，不像天牛；KB 里的中文名"光肩星天牛"本身也可疑
+  - → `competition_all_sorted` 的**文件名置信度不能当"标注正确"的证据**；现场/答辩前务必人工对照植保图鉴筛一遍
+- 用法:
+  ```powershell
+  py -3.14 scripts/pick_real_testset.py --dry-run    # 先看选了谁
+  py -3.14 scripts/pick_real_testset.py              # 复制成 real_testset20/
+  py -3.14 scripts/eval_real_testset.py --conf 0.25  # 跑识别，出 csv/json
+  ```
+
+### 本机跑推理/验证的环境坑（2026-10-13 踩到）
+1. 仓库根有一份 **vendored `ultralytics/`（8.2.0）**，靠 cwd 优先级被 import；`py -3.14 scripts/xxx.py`
+   时 `sys.path[0]` 是 `scripts/` → 必须脚本内 `sys.path.insert(0, ROOT)`，否则 `ModuleNotFoundError: ultralytics`
+2. 本机 numpy 是 2.x，而该 vendored 版本用 `np.trapz`（2.x 已删）→ 验证跑到算 mAP 时崩。
+   已在 `ultralytics/utils/metrics.py` 改成 `getattr(np,'trapezoid',None) or np.trapz`（**这处改动别回滚**）
+3. 离线拉不到 `Arial.ttf` 会把 `val()` 直接搞崩 → 已让 `ultralytics/utils/checks.py:check_font` 失败即返回 None、
+   `ultralytics/data/utils.py` 里 check_font 包 try（字体只影响绘图观感）
+4. `python -m ultralytics` 在本机不可用（无 console script）；`scripts/per_class_val.py --help` 要能跑说明环境对
+5. 每类验证一次约 **6 分钟**（CPU，2046 张 val 图）；报告落 `output/per_class_val_<时间戳>.{csv,json,md}`
 
 ## 清理记录 (2026-10-08 · 目录对齐)
 - 删除 GUI v2 线: main_v2.py、UI_v2.py（均未提交 git，**永久删除**；主线定为 main.py + UI.py）

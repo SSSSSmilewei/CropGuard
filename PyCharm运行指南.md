@@ -35,11 +35,11 @@
 | --- | --- |
 | **0. 端口/服务自检 (先跑这个)** | 告诉你 Ollama 在不在跑、8080/8443 被谁占了、手机该用哪个地址 |
 | **1. GUI 桌面检测 (main)** | 打开 PyQt 窗口：检测图片/文件夹/视频/摄像头 + 语音 + 大模型问答 |
-| **2. 服务器+手机 (api_server --https)** | 起 HTTP 8080 + HTTPS 8443，日志里会打印**手机访问地址** |
-| **3. 自检 (tests/run_tests.py)** | 跑 60 项测试，确认软件没问题（约 40 秒） |
+| **2. 服务器+手机 (api_server --https)** | 起 HTTP 8080 + HTTPS 8443，日志里会打印**手机唯一入口地址**（与默认启动等价） |
+| **3. 自检 (tests/run_tests.py)** | 跑自检用例，确认软件没问题（约 40 秒） |
 | **4. RAG 评测 (ask_eval)** | 输出召回率/拒答率/拦截率（答辩举证用） |
 | **5. 找摄像头索引 (camera_probe)** | 扫 0~5 号摄像头并存快照，告诉你 `camera_num` 该填几 |
-| **6. 服务器（纯 HTTP，不带https）** | 只起 8080（不需要手机实时模式时用这个，少一层证书警告） |
+| **6. 服务器（纯 HTTP，--no-https）** | 只起 8080（不需要手机实时模式时用这个） |
 | **7. 摄像头一键诊断 (camera_check)** | **相机问题的第一站**：DirectShow 枚举 + 索引×后端×格式全组合 + 按设备名打开，最后给结论与下一步 |
 
 如果右上角下拉框里没看到：**关闭 PyCharm 重新打开项目**（PyCharm 会重新加载 `.idea/runConfigurations/` 里的配置）。
@@ -205,7 +205,7 @@ CAMERA:
 
 ---
 
-## 2.7 测试在哪、怎么跑（60 项）
+## 2.7 测试在哪、怎么跑（171 项）
 
 **位置**（都在 `D:\CropGuard\` 下）：
 
@@ -217,6 +217,9 @@ tests/
 ├─ test_retriever.py               ← 16 项：RAG 召回 / 库外拒答 / 别名映射
 ├─ test_guard.py                   ←  8 项：防幻觉（编造药名、编造剂量、覆盖率）
 ├─ test_intent.py                  ← 19 项：语音指令解析 + 危险指令拦截 + 时长钳制
+├─ test_mist_protocol.py           ← 26 项：雾化节点协议（含"200 但拒绝"、兜底自动停）
+├─ test_dashboard.py               ←   8 项：演示看板快照/离线合规/内嵌 JS 能解析
+├─ test_phone_https.py             ← 14 项：手机端 http/https 合一 + 证书 SAN 覆盖 + 实时叠框(node 运行时)
 └─ test_feedback_and_camera.py     ← 17 项：语音队列（多条都播）+ 相机采集/看门狗/多策略解析
 scripts/ask_eval.py                ← RAG 评测报告（召回率/拒答率/拦截率，答辩举证用）
 ```
@@ -225,8 +228,8 @@ scripts/ask_eval.py                ← RAG 评测报告（召回率/拒答率/�
 
 | 想跑什么 | 操作 |
 | --- | --- |
-| **全部 60 项** | 右上角选 **`3. 自检 (tests/run_tests.py)`** → ▶，底部 Run 窗口看 `=== 60 passed, 0 failed ===` |
-| **只跑某个模块** | 同上，然后 `Run` → `Edit Configurations` → `Parameters` 填 `intent`（或 `guard`、`retriever`、`feedback`）→ 再 ▶ |
+| **全部 171 项** | 右上角选 **`3. 自检 (tests/run_tests.py)`** → ▶，底部 Run 窗口看 `=== 171 passed, 0 failed ===` |
+| **只跑某个模块** | 同上，然后 `Run` → `Edit Configurations` → `Parameters` 填 `intent`（或 `guard`、`retriever`、`feedback`、`phone_https`）→ 再 ▶ |
 | **单个用例** | 打开 `tests\test_intent.py` → 用例函数左边会出现绿色 ▶（装了 pytest 时） |
 | **想用 pytest** | 底部 Terminal：`pytest tests -q`（需先 `pip install pytest`；当前环境没装，用上面两种方式即可） |
 | **RAG 指标报告** | 选 **`4. RAG 评测 (ask_eval)`** → ▶（加参数 `--llm` 才会真调大模型） |
@@ -276,14 +279,18 @@ PyCharm 里也能开"终端"，但**不用命令行也能起**：
 
 ### 第 4 步：起服务器 + 手机连
 
-右上角选 **`2. 服务器+手机 (api_server --https)`** → 点 ▶。
+右上角选 **`2. 服务器+手机 (api_server --https)`** → 点 ▶（等价于默认启动：HTTPS 默认就开）。
 
 Run 窗口会打印（这就是你要的东西）：
 
 ```
-手机会话页: http://10.30.129.219:8080/m
-手机实时模式: https://10.30.129.219:8443/m
+[CERT] ✅ SAN 已覆盖当前局域网 IP: 10.30.129.219
+手机会话页(唯一入口): https://10.30.129.219:8443/m
+（http 打开也会自动升到上面这个地址；不想升级就加 ?http=1 留在 HTTP 拍照模式）
 ```
+
+> 启动日志里的 IP 会随网络变化；证书也会自动按当前 IP 重签。
+> 若 HTTPS 没起来，横幅会写明原因，并且手机页**不会**给出打不开的 https 链接。
 
 然后：
 

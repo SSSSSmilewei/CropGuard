@@ -142,9 +142,22 @@
     <div class="header">
         <h1>CropGuard - 农作物害虫智能检测系统</h1>
         <p>基于 YOLOv8 + SE注意力机制 | 27类农业害虫识别 | AI防治建议</p>
+        <p style="margin-top:10px;"><a href="/dashboard" style="color:#cfe9d4;">📊 打开数据看板（演示用）</a></p>
     </div>
 
     <div class="container">
+        <!-- 手机端入口：http/https 已是**同一个页面** —— HTTPS 可用时扫码即实时模式，
+             不可用时这里只显示 HTTP 拍照入口，绝不给出打不开的地址 -->
+        <div class="api-section" id="phoneEntry">
+            <h3>📱 手机端入口（实时摄像头 / 拍照 / 问答 / 雾化 都在同一页）</h3>
+            <p style="margin-top:10px;">手机与电脑连同一个 WiFi/热点，扫码或直接输入下面这个地址：</p>
+            <p style="margin:8px 0;"><code id="phoneUrl">正在读取…</code></p>
+            <div id="phoneHint" style="color:#888;font-size:13px;"></div>
+            <img id="phoneQr" alt="手机端二维码"
+                 style="width:170px;height:170px;margin-top:12px;background:#fff;
+                        border:1px solid #ddd;border-radius:8px;display:none;">
+        </div>
+
         <div class="upload-section">
             <h2 style="margin-bottom:15px;">上传图片进行检测</h2>
             <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
@@ -218,6 +231,29 @@
 
     <script>
         let selectedFile = null;
+
+        // 手机端入口：地址与二维码都取自服务端（同一份口径，避免手输错 IP /
+        // 避免在 HTTPS 没起来时给出死链）
+        async function loadPhoneEntry() {
+            const urlEl = document.getElementById('phoneUrl');
+            try {
+                const d = await (await fetch('/api/lan')).json();
+                const url = d.phone_url || ((d.phone_urls || [])[0] || '');
+                if (!url) { urlEl.textContent = '没能识别本机局域网 IP（检查 WiFi 是否连上）'; return; }
+                urlEl.textContent = url;
+                const qr = document.getElementById('phoneQr');
+                qr.src = '/qr?url=' + encodeURIComponent(url) + '&size=6';
+                qr.style.display = 'block';
+                document.getElementById('phoneHint').textContent = d.https_enabled
+                    ? 'HTTPS 已开启：手机首次打开会提示"不是私密连接"，选「高级 → 继续前往」；'
+                      + '之后实时模式（手机摄像头）可用。用 http 地址打开也会自动升到这里。'
+                    : '当前是纯 HTTP 启动（--no-https 或证书不可用）：手机只能用拍照模式；'
+                      + '要实时模式请重启服务器（不要加 --no-https）。';
+            } catch (e) {
+                urlEl.textContent = '读取失败：' + e.message;
+            }
+        }
+        loadPhoneEntry();
 
         // 拖拽上传
         const uploadArea = document.getElementById('uploadArea');

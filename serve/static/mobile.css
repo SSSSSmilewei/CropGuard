@@ -22,11 +22,37 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei'
 .video-wrap { position:relative; width:100%; border-radius:12px; overflow:hidden; background:#000;
               aspect-ratio:4/3; margin-bottom:8px; }
 .video-wrap video, .video-wrap img { width:100%; height:100%; object-fit:contain; display:block; }
+/* 检测框叠层：由 mobile.js 画（服务端只回 JSON，省流量）。
+   pointer-events:none 保证它不抢走视频/缩放的触摸事件。 */
+.video-wrap canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
 .overlay { position:absolute; left:8px; top:8px; right:8px; font-size:13px; font-weight:bold;
            color:#fff; text-shadow:0 1px 3px #000; pointer-events:none; }
-.det { display:flex; justify-content:space-between; padding:7px 9px; margin:5px 0; background:#101a10;
+/* 实时画面按摄像头真实比例显示（JS 写 aspect-ratio），去掉固定 4:3 的黑边 */
+#liveWrap { aspect-ratio:auto; max-height:62vh; }
+/* 双击 / 「放大」：占满全屏，方便对准小目标 */
+#liveWrap.zoom { position:fixed; inset:0; z-index:60; border-radius:0; max-height:none;
+                 margin:0; aspect-ratio:auto; }
+.zoom-exit { display:none; position:absolute; right:8px; top:8px; z-index:3; padding:8px 12px;
+             border:none; border-radius:10px; background:rgba(0,0,0,.62); color:#fff;
+             font-size:13px; font-weight:bold; }
+#liveWrap.zoom .zoom-exit { display:block; }
+/* 实时状态小面板：目标数 / 风险 / 服务端耗时 / 往返延迟 / 上传 FPS */
+.stats { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 2px; }
+.chip { font-size:12px; padding:4px 10px; border-radius:999px; background:#101a10;
+        color:#cfe8cf; border:1px solid #243424; white-space:nowrap; }
+.chip.high { background:#4a1515; color:#ff8a80; border-color:#7a2020; }
+.chip.medium { background:#4a2f12; color:#ffcc80; border-color:#7a4a1a; }
+.chip.low, .chip.none { background:#14341a; color:#a5d6a7; }
+.switch { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:#cfe8cf; }
+.switch input { width:18px; height:18px; accent-color:#3d6b3f; }
+.det { display:block; padding:8px 10px; margin:5px 0; background:#101a10;
        border-radius:8px; border-left:3px solid #4caf50; font-size:13px; }
+.det .line { display:flex; justify-content:space-between; gap:10px; }
 .det .conf { color:#9e9e9e; font-size:12px; }
+.det .bar { height:5px; margin-top:6px; border-radius:3px; background:#0b130b; overflow:hidden; }
+.det .bar > i { display:block; height:100%; background:#4caf50; }
+.det.high { border-left-color:#ff8a80; } .det.high .bar > i { background:#e57373; }
+.det.medium { border-left-color:#ffcc80; } .det.medium .bar > i { background:#ffb74d; }
 .risk { padding:9px 12px; border-radius:9px; background:#12210f; font-weight:bold; font-size:14px; margin-bottom:8px; }
 .risk.high { background:#4a1515; color:#ff8a80; }
 .risk.medium { background:#4a2f12; color:#ffcc80; }

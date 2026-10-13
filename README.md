@@ -63,16 +63,34 @@ pip install -r requirements-server.txt
 
 ```bash
 python main.py                      # 桌面 GUI（检测 + 语音 + 大模型问答）
-python api_server.py                # Web 服务（PC 首页 + 手机端 /m + REST/WS）
-python api_server.py --https        # 额外开 HTTPS 8443（手机"实时模式"必须用它）
+python api_server.py                # Web 服务（PC 首页 + 数据看板 + 手机端 /m + REST/WS）
+                                    # 默认同时监听 HTTP 8080 与 HTTPS 8443（手机实时模式）
+python api_server.py --no-https     # 只跑 HTTP：手机只能用拍照模式，不能调手机摄像头
 ```
 
-启动后终端会直接打印**手机入口地址**，例如：
+启动后终端会直接打印**手机入口地址 + 看板地址**，例如：
 
 ```
-手机会话页: http://10.30.129.219:8080/m
-手机监测页: http://10.30.129.219:8080/stream
+数据看板: http://127.0.0.1:8080/dashboard
+[INFO] Spray transport=http available=True
+[INFO] 雾化节点(mist)=[...] 持续模式兜底=300s
+手机会话页(唯一入口): https://10.30.129.219:8443/m
 ```
+
+**手机端只有一个地址**：`https://<本机IP>:8443/m`（实时摄像头 / 拍照 / 问答 / 雾化都在这一页）。
+用 `http://<本机IP>:8080/m` 打开会**自动升到同一个页面**（不想升级就加 `?http=1` 留在 HTTP 拍照模式）。
+首次打开会提示"不是私密连接"，选「高级 → 继续前往」即可（自签证书；证书会自动按当前 IP 重签，
+换热点/换网段后不用手动处理）。`/api/lan` 会返回 `https_enabled` 与 `phone_url`，
+HTTPS 没起来时页面**不会**给出打不开的 https 链接。
+
+**演示数据看板**（`/dashboard`，答辩/PPT 用）：一屏给出 mAP 收敛曲线、27 类每类指标、
+20 张真实样本实测（含缩略图与单张耗时）、闭环与 RAG 评测口径、硬件拓扑，以及实时态下的
+模型/相机/语音/雾化节点状态与实时画面。
+
+* 想**离线单文件**看：直接用浏览器打开 `serve/pages/dashboard.html`（数据是内联快照，零联网请求）；
+* 想**看实时**：先起服务，再开 `http://127.0.0.1:8080/dashboard`（实时态必须同源，file:// 会被浏览器拦跨域）；
+* 快照数据来自真实产物，重新生成：`py -3.14 scripts/build_dashboard.py`（只改写页面里的标记区，
+  手写的结构/样式/脚本原样保留）。看板**只读**：不提供喷淋/雾化启停按钮，避免演示误触发硬件。
 
 PC 浏览器打开 `http://127.0.0.1:8080/` 首页，页面下方会显示手机入口的**二维码（手写实现，无额外依赖）**，
 手机扫码即可进入 `/m`，不用手输 IP。
@@ -90,32 +108,41 @@ PC 浏览器打开 `http://127.0.0.1:8080/` 首页，页面下方会显示手机
 # 1) 拉起本地大模型（缺了不影响检测，但问答会降级为知识库原文）
 ollama serve
 
-# 2) 起服务（要用手机实时模式就加 --https）
-python api_server.py --https
+# 2) 起服务（默认已同时开 HTTP 8080 + HTTPS 8443；要纯 HTTP 用 --no-https）
+python api_server.py
 ```
 
-看日志里的四行关键信息，缺谁补谁：
+看日志里的关键信息，缺谁补谁：
 
 ```
 [INFO] 相机 ... backend=dshow size=1280x720      # 相机通了
 [TTS] 后端就绪 engine=...                        # 语音通了
 [INFO] Spray transport=http available=True       # 喷洒链路通了
-手机会话页: http://<本机IP>:8080/m                # 手机地址
+[INFO] Spray transport/http_targets...           # 喷淋目标与协议（json/mist）
+[INFO] 雾化节点(mist)=[...] 持续模式兜底=300s      # 雾化节点
+[CERT] ✅ SAN 已覆盖当前局域网 IP: 10.30.129.219   # 证书覆盖了这个 IP 才能手机访问
+手机会话页(唯一入口): https://<本机IP>:8443/m      # 手机地址（唯一）
 ```
+
+若 HTTPS 没起来，横幅会写明原因（`--no-https` / 证书不可用 / 8443 被占用），
+并提示"手机实时模式不可用，拍照模式照常"——**不会**再给出打不开的 https 地址。
 
 ### 3.2 三张处置卡
 
 | 现场状况 | 一句话处理 |
 | ---- | ---- |
 | **相机打不开 / 画面卡住** | `python tool/camera_probe.py` 重认索引 → 改 `CONFIG.camera_num`；运行中卡死看 `GET /api/camera/health`，必要时 `POST /api/camera/restart` 强制重开。注意别让 GUI 和服务器同时占相机。 |
-| **手机实时模式起不来** | 必须是 `https://<IP>:8443/m`（`getUserMedia` 要求安全上下文）；首次点"继续访问"或手动信任自签证书；实在不行**退回拍照模式**（HTTP 也能用），演示不会空场。 |
+| **手机实时模式起不来** | 必须用 `https://<IP>:8443/m`（`getUserMedia` 要求安全上下文，HTTP 页面浏览器不给摄像头）；首次点「高级 → 继续前往」信任自签证书；实在不行**退回拍照模式**（HTTP 也能用），演示不会空场。查 `GET /api/lan` 的 `https_enabled` 与启动日志里 HTTPS 是否就绪。 |
 | **语音不响** | 看启动日志 `[TTS] 后端就绪 engine=?`：本机实测 `SAPI.SPVoice` 不可用、`System.Speech`（powershell 后端）可用，auto 会自动选后者。若显示 `无可用语音后端`，用 `GET /api/feedback/status` 看 `init_errors`。 |
 
 ### 3.3 演示动线（建议 3 分钟）
 
+0. 【暖场】打开 `http://127.0.0.1:8080/dashboard` → 一屏给出 mAP 曲线 / 27 类指标 / 20 张实测 / 闭环与 RAG 口径；
+   接着点「启动实时画面」看实时检测与喷淋状态（无相机时它会给出可读原因，不会白屏）；
 1. PC 首页上传一张样本图 → 显示检测框 + 风险 + 知识库建议；
 2. 手机扫码进 `/m` → 拍照识别 → 结果回到手机；
-3. 手机点"实时模式"（HTTPS）→ 手机画面实时上传识别；
+3. 手机点"实时模式"（HTTPS）→ 手机画面实时上传识别，**检测框直接叠在手机画面上**（中文名 + 置信度），
+   下方状态条显示目标数/风险/服务端耗时/往返延迟/FPS；可随时切前后摄像头、隐藏检测框、放大、截图（带框）；
 4. 手机提问"蚜虫怎么防治"→ 回答带"依据"；再问"今天天气怎么样"→ **明确拒答**（这就是防幻觉的证据）；
 5. 手机输入"给 A 片区喷 3 秒"→ 解析 → 点确认 → 继电器动作 + 语音播报"已给片区A喷淋3秒"。
 
@@ -133,11 +160,11 @@ python scripts/ask_eval.py    # RAG 评测：库内召回率、库外拒答率�
 | 接口 | 说明 |
 | ---- | ---- |
 | `GET /` | PC 演示页（上传检测 + 建议 + 手机入口二维码） |
-| `GET /m` | **手机端主页**：拍照识别 / 实时识别 / 提问 / 喷洒 / 历史 |
+| `GET /m` | **手机端主页**：拍照识别 / 实时识别（画面自带检测框叠层）/ 提问 / 喷洒 / 雾化 / 历史 |
 | `GET /stream` | 手机监测页（旧版，保留兼容） |
 | `POST /api/detect` | 上传图片检测（multipart）→ 带框结果图 + 风险 + 知识库建议 |
 | `WS /ws/stream` | 服务器相机实时流（共享采集源，多客户端可同时看） |
-| `WS /ws/phone` | **手机上传二进制 JPEG 帧 → 回检测 JSON**（不回图，省流量） |
+| `WS /ws/phone` | **手机上传二进制 JPEG 帧 → 回检测 JSON**（不回图，省流量；检测框由手机页 canvas 自己叠，见 `serve/static/mobile.js` 的 `drawDetections`） |
 | `POST /api/ask` | 自由问答（RAG + 防幻觉）：返回 `answer` / `citations` / `guard` |
 | `GET /api/kb/search?q=` | 只做检索：现场展示召回片段与分数 |
 | `POST /api/ask_command` | 自然语言 → 喷洒意图（**默认只解析，需人工确认**） |
@@ -180,9 +207,17 @@ yolov8/
 ├─ api_server.py             # FastAPI 服务：PC 页 / 手机页 / REST / WebSocket / HTTPS
 ├─ config/
 │  ├─ configs.yaml           # 主配置（模型/设备/UI/AI/相机/语音/RAG/手机端）
-│  └─ certs/                 # HTTPS 自签证书（--https 首次运行自动生成）
+│  └─ certs/                 # HTTPS 自签证书（启动时自动生成；SAN 不覆盖当前 IP 会自动重签）
 ├─ serve/
-│  └─ mobile.py              # 手机端页面（/m）HTML
+│  ├─ mobile.py              # 手机端页面（/m）HTML
+│  └─ pages/
+│     ├─ index.html          # PC 首页（上传识别）
+│     ├─ dashboard.html      # ★ 演示数据看板（/dashboard；内联快照，可离线单文件打开）
+│     └─ stream.html         # 实时监测页
+├─ scripts/
+│  ├─ build_dashboard.py     # ★ 生成看板快照（只改写 dashboard.html 的标记区）
+│  ├─ per_class_val.py       # 每类验证指标（看板数据来源之一）
+│  └─ eval_real_testset.py   # 20 张真实样本实测（看板数据来源之一）
 ├─ tool/
 │  ├─ camera_source.py       # ★ 共享相机采集 + 看门狗自愈（GUI/服务器/手机共用）
 │  ├─ camera_probe.py        # 摄像头索引探针（现场排查用）
@@ -229,7 +264,7 @@ yolov8/
 | `SPRAY.max_duration` | `5` | 单次喷洒上限（雾化片怕连烧，固件再钳一次，默认 5 秒） |
 | `CHAT.refuse_below` | `0.18` | 检索分数低于此值**拒绝生成**（防幻觉硬闸门） |
 | `RAG.retriever` / `top_k` | `'tfidf'` / `4` | 召回实现与条数（预留 `embedding` 升级位） |
-| `PHONE.https_port` | `8443` | `--https` 时 HTTPS 端口，与 8080 同时监听 |
+| `PHONE.https_port` | `8443` | HTTPS 端口，与 8080 同时监听（默认开；`--no-https` 关掉） |
 
 ---
 
@@ -299,8 +334,10 @@ python train_640.py --resume  # 断点续训（从 pest27_final4 的 last.pt）
 | 画面"跑一会就卡死" | 已由 `tool/camera_source.py` 的看门狗处理；仍卡就 `POST /api/camera/restart`，并看 `/api/camera/health` |
 | 多个手机同时看实时流报"打不开相机" | 已修：`/ws/stream` 改为共享采集源；若日志仍报设备忙，说明是别的程序占着相机 |
 | 语音只响第一次 | 已修（`feedback/tts.py` 专用线程 + COM 修复）。若日志显示 `无可用语音后端`，看 `/api/feedback/status` 的 `init_errors` |
-| 手机实时模式打不开摄像头 | 必须 HTTPS（`--https`，用 `https://<IP>:8443/m`）并信任自签证书；否则用拍照模式 |
-| 手机打不开页面 | 手机与服务器需在同一 WiFi/热点网段；用启动日志打印的那个 IP |
+| 手机实时模式打不开摄像头 | 用 `https://<IP>:8443/m`（HTTPS 默认已开）并首次点「高级 → 继续前往」信任自签证书；`/api/lan` 的 `https_enabled` 为 false 说明 HTTPS 没起来（看启动横幅的原因） |
+| 手机打不开页面 | 手机与服务器需在同一 WiFi/热点网段；用启动横幅打印的"手机会话页(唯一入口)"那个 IP |
+| 手机提示"证书名称不符 / 连接不是私密连接" | 证书 SAN 没覆盖手机在用的那个 IP：重启服务（会自动重签）或 `python tool/gen_cert.py --force`；手机走别的网段时加 `--cert-extra-ip <IP>` |
+| 8443 被占用（HTTPS 没起来） | `python tool/port_check.py --kill`，或换端口 `--https-port 8444` |
 | 大模型回答"知识库未涵盖" | 这是**设计行为**（防幻觉）：该问题超出 27 类害虫知识库，可扩充 `llm/knowledge_base.py` 后重试 |
 | 问答很慢 | 7B 在 6GB 显存上单次约 4~10 秒；可换 `qwen2.5:3b`（改 `llm/local_llm.py` 的 `MODEL_NAME`） |
 | 中文乱码 | 命令行执行前 `chcp 65001`；GUI 与网页不受影响 |

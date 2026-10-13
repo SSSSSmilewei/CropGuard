@@ -127,8 +127,12 @@ def main():
     # ---- 2) 本服务端口 ----
     print('\n[2] CropGuard 服务端口')
     busy = check_port(8080, do_kill=args.kill)
-    check_port(8443, do_kill=args.kill)
-    if busy and not args.kill:
+    busy_https = check_port(8443, do_kill=args.kill)
+    if busy and busy_https and not args.kill:
+        # 8080 + 8443 同时被占：多半是**服务已经在正常跑**（HTTPS 默认同开）
+        print('  → 8080 与 8443 都有监听，通常说明服务已经在跑（HTTPS 默认同开）——'
+              '先直接访问下面的手机地址；不需要再起一个')
+    elif busy and not args.kill:
         print('  → 处理办法：① 上次的服务没关（点 Run 面板的红色 ⏹ 停止）；'
               '② 或重跑本脚本加 --kill；③ 或改用别的端口（Run 配置里加 --port 8090）')
     elif args.kill:
@@ -136,11 +140,11 @@ def main():
 
     # ---- 3) 手机入口 ----
     ips = lang_ip_list()
-    print('\n[3] 手机访问地址（手机需连同一 WiFi/热点）')
+    print('\n[3] 手机访问地址（手机需连同一 WiFi/热点；http/https 是**同一个页面**）')
     if ips:
         for ip in ips:
-            print(f'  http://{ip}:8080/m     ← 拍照模式（HTTP 可用）')
-            print(f'  https://{ip}:8443/m    ← 实时模式（需 --https 启动，首次要信任自签证书）')
+            print(f'  https://{ip}:8443/m    ← 唯一入口（HTTPS 默认已开；实时模式用它，首次要信任自签证书）')
+            print(f'  http://{ip}:8080/m     ← 打开会自动升到 https；加 ?http=1 留在 HTTP 拍照模式')
     else:
         print(' 没能识别本机局域网 IP（检查 WiFi 是否连上）')
 

@@ -70,6 +70,16 @@ async def index():
     return static_pages.load('index')
 
 
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """演示数据看板（快照数据已内联在页面里，实时态复用同源 /api/* 与 /ws/stream）。
+
+    快照由 scripts/build_dashboard.py 从真实产物生成；直接用浏览器打开
+    serve/pages/dashboard.html 也能看（此时只有快照态，因为 file:// 跨域取不到接口）。
+    """
+    return static_pages.load('dashboard')
+
+
 @app.get("/api/health")
 async def health():
     """健康检查"""
@@ -212,8 +222,10 @@ async def stream_page():
 # ==================== 手机端页面 /m ====================
 _cfg_phone = config.get('PHONE', {}) or {}
 # 真实监听端口（由 __main__ 里用 --port/--https-port 写入），
-# 供 /m 页面与 /qr 生成正确的手机访问地址
-_srv_ports = {'http': None, 'https': None}
+# 供 /m 页面与 /qr 生成正确的手机访问地址。
+# https_on 只有 HTTPS 监听**真的**起来了才为 True：页面据此决定要不要升级到 HTTPS，
+# 绝不能拿配置里的 8443 当"能用"（那样 http 页会给出一个打不开的死链）。
+_srv_ports = {'http': None, 'https': None, 'https_on': False}
 
 
 def _lan_ips():
@@ -242,6 +254,11 @@ def _lan_ips():
     return ips
 
 
+def _https_on():
+    """HTTPS 监听是否真的在服务（不是"配置里写了 8443"）。"""
+    return bool(_srv_ports.get('https_on'))
+
+
 def _phone_ports(request_host_port=None):
     """返回 (http_port, https_port)。
 
@@ -259,18 +276,40 @@ def _phone_ports(request_host_port=None):
     return http_port, https_port
 
 
+def _phone_url(ip=None, scheme=None):
+    """手机端**唯一入口**地址（http/https 合一的那个）。
+
+    HTTPS 可用就给 https（实时模式必须安全上下文），否则退回 http 拍照模式。
+    """
+    host = ip or (_lan_ips() or ['127.0.0.1'])[0]
+    http_port, https_port = _phone_ports()
+    if scheme is None:
+        scheme = 'https' if _https_on() else 'http'
+    port = https_port if scheme == 'https' else http_port
+    return f'{scheme}://{host}:{port}/m'
+
+
 @app.get("/api/lan")
 async def lan_info(request=None):
-    """给 PC 首页/手机页用：本机可被手机访问的地址清单。"""
+    """给 PC 首页/手机页用：本机可被手机访问的地址清单。
+
+    `https_enabled` 只在 HTTPS 监听真的起来后才为 true；未启用时
+    `phone_urls_https` 返回空列表 —— 免得页面给出一个打不开的地址。
+    """
     ips = _lan_ips()
     ports = _phone_ports()
+    https_on = _https_on()
+    first = (ips or ['127.0.0.1'])[0]
     return {
         "success": True,
         "hosts": ips,
         "http_port": ports[0],
         "https_port": ports[1],
+        "https_enabled": https_on,
+        "phone_url": _phone_url(first),
+        "phone_url_http": f"http://{first}:{ports[0]}/m",
         "phone_urls": [f"http://{ip}:{ports[0]}/m" for ip in ips],
-        "phone_urls_https": [f"https://{ip}:{ports[1]}/m" for ip in ips],
+        "phone_urls_https": [f"https://{ip}:{ports[1]}/m" for ip in ips] if https_on else [],
     }
 
 
@@ -279,8 +318,9 @@ async def qr_image(url: str = None, size: int = 6):
     """把网址渲染成二维码 PNG（纯 PIL 手写实现，见 tool/qr_min.py）。
 
     现场用法：PC 首页把手机入口的二维码显示出来，手机一扫就进 /m，不用手输 IP。
+    不传 url 时默认用"手机端唯一入口"（HTTPS 可用就是 https，扫码即实时模式）。
     """
-    url = url or f"http://{( _lan_ips() or ['127.0.0.1'])[0]}:{_phone_ports()[0]}/m"
+    url = url or _phone_url()
     try:
         from io import BytesIO
         from tool.qr_min import to_pil
@@ -304,6 +344,7 @@ async def mobile_home(request: Request):
         mist_url = str(mist_targets[0].get('url') or '')
     html = mobile_page.render(
         host=host, http_port=http_port, https_port=https_port,
+        https_enabled=_https_on(),
         frame_interval_ms=int(_cfg_phone.get('frame_interval_ms', 400) or 400),
         upload_max_side=int(_cfg_phone.get('upload_max_side', 960) or 960),
         mist_url=mist_url,
@@ -658,7 +699,10 @@ async def ws_phone(websocket: WebSocket):
 
     为什么不用 HTTP 轮询：手机 2~3 帧/秒上传，用 WebSocket 省掉每帧的握手开销，
     而且能天然做"单帧背压"（客户端收到结果才发下一帧）。
-    为什么**不回传图像**：手机流量与延迟都金贵，检测框由前端自己叠在预览上。
+    为什么**不回传图像**：手机流量与延迟都金贵，检测框由前端自己叠在预览上
+    —— 见 `serve/static/mobile.js` 的 `drawDetections()`（canvas 叠加，已实现）；
+    bbox 是"上传那一帧"的绝对像素坐标，前端按 `sentFrame` 尺寸 + `object-fit:contain`
+    的实际显示矩形映射（`fitRect` / `boxToViewRect`）。改这里要同步改前端。
 
     协议：客户端每帧发一个二进制消息（JPEG/PNG 原始字节）；
          服务端回文本 JSON：{success, count, detections, risk, elapsed, ts}
@@ -725,6 +769,101 @@ async def ws_phone(websocket: WebSocket):
             pass
 
 
+# ==================== HTTPS 启动辅助 ====================
+def _port_busy(host, port):
+    """preflight：这个端口能不能 bind。True=被占用/不可用。"""
+    import socket as _socket
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    try:
+        s.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        s.bind((host or '0.0.0.0', int(port)))
+        return False
+    except OSError:
+        return True
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _https_selfcheck(port, timeout=8):
+    """起完 HTTPS 后真发一次请求（跳过证书校验）。
+
+    只看"线程还在跑"是不够的 —— 端口被占时 uvicorn 会静默退出，
+    必须真连一次才能说 HTTPS 可用。
+    """
+    import ssl as _ssl
+    import urllib.request
+    try:
+        ctx = _ssl._create_unverified_context()
+        with urllib.request.urlopen(f'https://127.0.0.1:{int(port)}/api/health',
+                                    context=ctx, timeout=timeout) as r:
+            return True, f'HTTP {r.status}'
+    except Exception as exc:
+        return False, f'{type(exc).__name__}: {str(exc)[:120]}'
+
+
+def _start_https(args):
+    """起 HTTPS 监听：证书 → 端口 preflight → 线程 → 等就绪 → 自检。
+
+    返回 (uvicorn.Server | None, 原因字符串)。失败时一定把已经起来的监听关掉，
+    绝不让"8443 在听但 _srv_ports['https_on'] 是 False"这种自相矛盾的状态出现。
+    """
+    from tool.gen_cert import ensure_cert
+    cert_file, key_file, err = ensure_cert(args.cert_dir, days=1095,
+                                           extra_ips=list(args.cert_extra_ip or []))
+    if err:
+        return None, f'证书不可用（{err}）'
+    if _port_busy(args.host, args.https_port):
+        who = ''
+        try:
+            from tool.port_check import who_listens
+            procs = who_listens(args.https_port)
+            if procs:
+                who = '，占用进程 PID=' + ', '.join(p[0] for p in procs)
+        except Exception:
+            pass
+        return None, (f'HTTPS 端口 :{args.https_port} 已被占用{who}。'
+                      f'处理：python tool/port_check.py --kill，或换 --https-port')
+
+    errors = []
+    try:
+        cfg = uvicorn.Config(app, host=args.host, port=args.https_port,
+                             ssl_keyfile=key_file, ssl_certfile=cert_file,
+                             log_level='info')
+    except Exception as exc:
+        return None, f'uvicorn 配置失败: {type(exc).__name__}: {exc}'
+    srv = uvicorn.Server(cfg)
+
+    def _run():
+        try:
+            srv.run()
+        except Exception as exc:                      # 进程/绑定级失败
+            errors.append(f'{type(exc).__name__}: {exc}')
+
+    threading.Thread(target=_run, name='HTTPS', daemon=True).start()
+    deadline = time.time() + 8
+    while time.time() < deadline and not getattr(srv, 'started', False) and not errors:
+        time.sleep(0.1)
+
+    def _shutdown(reason):
+        try:
+            srv.should_exit = True
+        except Exception:
+            pass
+        return None, reason
+
+    if errors:
+        return _shutdown('HTTPS 线程启动失败：' + errors[0])
+    if not getattr(srv, 'started', False):
+        return _shutdown('8 秒内没就绪（端口被占 / 证书不被 ssl 接受，看上面的 uvicorn 日志）')
+    ok, detail = _https_selfcheck(args.https_port)
+    if not ok:
+        return _shutdown(f'端口在听但自检失败：{detail}')
+    return srv, ''
+
+
 # ==================== 程序入口 ====================
 if __name__ == "__main__":
     import argparse
@@ -733,14 +872,18 @@ if __name__ == "__main__":
     parser.add_argument("--host", default="0.0.0.0", help="监听地址")
     parser.add_argument("--port", type=int, default=8080, help="监听端口")
     parser.add_argument("--reload", action="store_true", help="开发模式热重载")
-    parser.add_argument("--https", action="store_true",
-                        help="额外开一个 HTTPS 端口（手机 getUserMedia 实时模式需要）")
+    parser.add_argument("--https", dest="https", action="store_true", default=True,
+                        help="开 HTTPS（手机实时模式需要；默认已开，保留是为了兼容旧命令）")
+    parser.add_argument("--no-https", dest="https", action="store_false",
+                        help="只跑 HTTP（手机实时模式不可用，拍照模式照常）")
     parser.add_argument("--https-port", type=int,
                         default=int((config.get('PHONE', {}) or {}).get('https_port', 8443) or 8443),
                         help="HTTPS 端口")
     parser.add_argument("--cert-dir",
                         default=str((config.get('PHONE', {}) or {}).get('cert_dir', './config/certs')),
                         help="证书目录（不存在会自动生成自签证书）")
+    parser.add_argument("--cert-extra-ip", action="append", default=[],
+                        help="额外写进证书 SAN 的 IP（手机走别的网段时用，可多次）")
     args = parser.parse_args()
 
     if not HAS_WEB:
@@ -753,7 +896,35 @@ if __name__ == "__main__":
     # 把真实端口告诉页面层：这样 `--port 8090` 启动时，手机页里内嵌的
     # 接口地址会自动跟着变成 8090（否则页面会去连 8080，调接口全失败）
     _srv_ports['http'] = int(args.port)
-    _srv_ports['https'] = int(args.https_port) if args.https else None
+    https_wanted = bool(args.https)
+    if args.reload and '--https' not in sys.argv:
+        # 热重载下 uvicorn 会另起子进程，HTTPS 线程会失控 → 开发模式默认只跑 HTTP
+        https_wanted = False
+        _https_reason = '开发模式 --reload 下默认不开（要开就显式写 --https）'
+    else:
+        _https_reason = '已用 --no-https 关闭' if not https_wanted else ''
+    _srv_ports['https'] = int(args.https_port) if https_wanted else None
+
+    if https_wanted and int(args.https_port) == int(args.port):
+        print(f"[ERROR] --https-port({args.https_port}) 与 --port({args.port}) 相同："
+              f"一个端口只能二选一（TLS 或明文）。请换端口。", flush=True)
+        sys.exit(2)
+
+    if https_wanted:
+        _https_server, _https_err = _start_https(args)
+        _srv_ports['https_on'] = _https_server is not None
+    else:
+        _srv_ports['https_on'] = False
+        _https_err = _https_reason
+
+    _listeners = f"http://{args.host}:{args.port}"
+    if _srv_ports['https_on']:
+        _listeners += f"  +  https://{args.host}:{args.https_port}"
+    _canon = _phone_url(_ips[0])
+    if _srv_ports['https_on']:
+        _https_note = '（HTTPS 就绪：实时摄像头 / 拍照 / 问答 / 雾化 都在同一个页面里）'
+    else:
+        _https_note = f'⚠ HTTPS 未启用：{_https_err} → 手机实时模式不可用，拍照模式照常'
     print(f"""
 ============================================================
   CropGuard - 农作物害虫智能检测系统 Web API
@@ -763,31 +934,18 @@ if __name__ == "__main__":
   设备: {device}
   喷淋: transport={spray.transport} available={spray.available}
   语音: engine={_fb_st['tts'].get('engine')} ready={_fb_st['tts'].get('ready')}
-  服务地址: http://{args.host}:{args.port}
+  监听: {_listeners}
   Web演示: http://{args.host}:{args.port}/
-  手机会话页: http://{_ips[0]}:{args.port}/m
-  手机监测页: http://{_ips[0]}:{args.port}/stream
+  数据看板: http://{args.host}:{args.port}/dashboard
+  手机监测页(旧): http://{_ips[0]}:{args.port}/stream
   API文档: http://{args.host}:{args.port}/docs
+------------------------------------------------------------
+  手机会话页(唯一入口): {_canon}
+  {_https_note}
+  （http 打开也会自动升到上面这个地址；不想升级就加 ?http=1 留在 HTTP 拍照模式）
 ============================================================
 """, flush=True)
 
-    if not args.https:
-        uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
-    else:
-        # HTTP 与 HTTPS 同时监听（共享同一个 app：相机/模型/历史都是单实例）
-        from tool.gen_cert import ensure_cert
-        cert_file, key_file, err = ensure_cert(args.cert_dir)
-        if err:
-            print(f"[WARN] HTTPS 证书不可用（{err}）；只启动 HTTP。"
-                  f"手机实时模式需要 HTTPS。", flush=True)
-            uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
-        else:
-            print(f"[INFO] HTTPS 证书: {cert_file}", flush=True)
-            print(f"[INFO] 手机实时模式: https://{_ips[0]}:{args.https_port}/m"
-                  f"（首次访问会提示证书不受信任，选「继续访问」即可）", flush=True)
-            http_server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port))
-            https_server = uvicorn.Server(uvicorn.Config(
-                app, host=args.host, port=args.https_port,
-                ssl_keyfile=key_file, ssl_certfile=cert_file))
-            threading.Thread(target=https_server.run, name='HTTPS', daemon=True).start()
-            http_server.run()
+    # HTTP 与 HTTPS 共享同一个 app（相机/模型/历史都是单实例）；HTTP 跑主线程，
+    # HTTPS 由 _start_https 起的守护线程负责（见上面的 _srv_ports['https_on']）。
+    uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)

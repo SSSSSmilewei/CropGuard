@@ -14,9 +14,11 @@
 </div>
 
 <div class="warnbar" id="secureTip" style="display:none">
-  当前是 <b>HTTP</b> 访问，浏览器不允许网页直接调用手机摄像头（实时模式需要 HTTPS）。
-  请用 <a id="httpsLink" style="color:#ffd08a;font-weight:bold" href="#">HTTPS 地址</a> 打开
-  （首次会提示证书不受信任，选"继续访问"）；或者直接用下面的<b>拍照识别</b>，它不需要 HTTPS。
+  当前是 <b>HTTP</b> 访问：浏览器只允许 HTTPS 页面调用手机摄像头（实时模式）。
+  本页会自动尝试升到 HTTPS；若没动静，请手动打开
+  <a id="httpsLink" style="color:#ffd08a;font-weight:bold" href="#">HTTPS 地址</a>
+  （首次提示"不是私密连接"时选「高级 → 继续前往」）。
+  下面的<b>拍照识别</b>不需要 HTTPS，随时可用。
 </div>
 
 <!-- ==================== 一、识别 ==================== -->
@@ -36,15 +38,40 @@
 
   <!-- 实时模式 -->
   <div id="livePane" style="display:none">
-    <div class="video-wrap">
+    <div class="video-wrap" id="liveWrap">
       <video id="phoneVideo" playsinline muted autoplay></video>
+      <!-- 检测框叠层：服务端只回检测 JSON（省流量），框由本机 canvas 画在这里 -->
+      <canvas id="liveCanvas"></canvas>
       <div class="overlay" id="liveOverlay">未开始</div>
+      <button class="zoom-exit" id="btnZoomExit" onclick="toggleZoom()">✕ 退出放大</button>
     </div>
+
+    <div class="stats" id="liveStats">
+      <span class="chip" id="statCount">目标 --</span>
+      <span class="chip none" id="statRisk">风险 --</span>
+      <span class="chip" id="statServer">服务端 --</span>
+      <span class="chip" id="statRtt">往返 --</span>
+      <span class="chip" id="statFps">FPS --</span>
+    </div>
+
     <div class="row">
       <button id="btnLiveStart" onclick="startLive()">▶ 开始实时识别</button>
       <button class="ghost" id="btnLiveStop" onclick="stopLive()">■ 停止</button>
     </div>
-    <div class="hint" id="liveHint">实时模式把手机画面按 ~2.5 帧/秒上传到服务器识别，结果实时叠加（不回传图像，省流量）。</div>
+    <div class="row">
+      <button class="ghost" id="btnCam" onclick="switchCamera()">🔄 前/后摄像头</button>
+      <button class="ghost" id="btnShot" onclick="saveShot()">📸 截图(带框)</button>
+      <button class="ghost" id="btnZoom" onclick="toggleZoom()">⛶ 放大</button>
+    </div>
+    <label class="switch">
+      <input type="checkbox" id="chkBoxes" checked onchange="onToggleBoxes()"> 显示检测框
+    </label>
+
+    <div class="hint" id="liveHint">
+      手机画面约每 <b id="liveIntervalMs">400</b> ms 上传一帧、最长边压到
+      <b id="liveMaxSide">960</b> px 再识别；检测框由本机浏览器叠在预览上
+      （服务器不回传图像，省流量）。实时期间请保持屏幕常亮、不要切到后台。
+    </div>
   </div>
 
   <div class="risk none" id="riskBar" style="margin-top:10px">风险等级：--</div>
