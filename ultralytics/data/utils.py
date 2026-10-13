@@ -339,7 +339,10 @@ def check_det_dataset(dataset, autodownload=True):
             dt = f"({round(time.time() - t, 1)}s)"
             s = f"success ✅ {dt}, saved to {colorstr('bold', DATASETS_DIR)}" if r in {0, None} else f"failure {dt} ❌"
             LOGGER.info(f"Dataset download {s}\n")
-    check_font("Arial.ttf" if is_ascii(data["names"]) else "Arial.Unicode.ttf")  # download fonts
+    try:
+        check_font("Arial.ttf" if is_ascii(data["names"]) else "Arial.Unicode.ttf")  # download fonts
+    except Exception as e:  # 离线机器：缺字体只影响绘图观感，不该阻断验证
+        LOGGER.warning(f"check_font 跳过（离线/无字体）：{e}")
 
     return data  # dictionary
 

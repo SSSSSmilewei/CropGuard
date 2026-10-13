@@ -316,10 +316,16 @@ def check_font(font="Arial.ttf"):
         return matches[0]
 
     # Download to USER_CONFIG_DIR if missing
+    # 本机离线（代理失效，ultralytics.com 拉不动）→ 下载失败不该把 val() 整个搞崩，
+    # 绘图时没有 Arial 用默认字体即可。
     url = f"https://ultralytics.com/assets/{name}"
-    if downloads.is_url(url, check=True):
-        downloads.safe_download(url=url, file=file)
-        return file
+    try:
+        if downloads.is_url(url, check=True):
+            downloads.safe_download(url=url, file=file)
+            return file
+    except Exception:
+        pass
+    return None
 
 
 def check_python(minimum: str = "3.8.0") -> bool:
