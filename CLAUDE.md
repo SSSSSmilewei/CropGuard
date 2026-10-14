@@ -50,7 +50,10 @@
 - 接地提示词: prompts/templates/grounded_expert.txt（取代旧 1500 字"报告型"模板）
 - 网页前端: web/（Vue 3 + Vite + TS，2026-10-14 重写）；**构建产物 web/dist 随仓库提交**（现场无 Node）；
   serve/spa.py 托管，路由 `/ /stream /ask /spray /system /m`；改前端后 `cd web && npm run build`
-  - 视觉：浅灰绿"标本衬板"底 + 田野深绿操作色 + 稻穗金检测框；数字 Barlow Condensed、数据 IBM Plex Mono（随包打包），中文用系统字体
+  - 视觉：浅灰绿"标本衬板"底 + 田野深绿操作色 + 稻穗金检测框
+  - 字体（2026-10-14 用户指定）：正文 **更纱黑体**、标题/重点 **思源宋体**、特殊字（读数、品牌字）**得意黑**；代码/地址 IBM Plex Mono。
+    裁剪成 woff2 放在 web/src/assets/fonts/（共约 2.6 MB，离线可用），生成脚本 scripts/build_webfonts.py；
+    改了界面文案/知识库后重跑该脚本再 npm run build（标题和特殊字只含项目里出现过的字，新字会回退到系统字体）
   - 设计稿（Claude Design 画布）：https://claude.ai/artifact/28a1ZbzuS39Ym3yTaMpTdj
   - 旧页面 serve/pages|templates|static、serve/mobile.py、serve/pages.py 已于 2026-10-14 删除（被 web/ 取代）
 - 二维码: tool/qr_min.py；证书: tool/gen_cert.py

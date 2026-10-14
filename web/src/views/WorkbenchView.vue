@@ -399,7 +399,7 @@ onBeforeUnmount(() => {
   color: var(--ink-2); cursor: pointer; text-align: center; max-width: 440px;
 }
 .drop:hover { border-color: var(--brand); color: var(--brand); }
-.drop-t1 { font-size: 16px; font-weight: 700; color: var(--ink); }
+.drop-t1 { font-family: var(--font-serif); font-size: 17px; font-weight: 700; color: var(--ink); }
 .drop-t2 { font-size: 13px; color: var(--ink-3); line-height: 1.7; }
 .foot { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 12px 20px; font-size: 12px; color: var(--ink-2); }
 .push { margin-left: auto; }
@@ -435,7 +435,7 @@ onBeforeUnmount(() => {
 .tv { color: var(--ink-2); }
 
 .risk-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 14px; }
-.risk-lv { font-size: 30px; font-weight: 700; line-height: 1.15; }
+.risk-lv { font-family: var(--font-serif); font-size: 30px; font-weight: 700; line-height: 1.2; }
 .risk-dt { font-size: 13px; color: var(--ink-2); }
 .link-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; }
 .lr { display: flex; gap: 10px; }

@@ -1,4 +1,14 @@
 /*
+ * 字体（均为 SIL OFL 开源字体，裁剪成 woff2 随前端打包，现场离线可用；生成脚本 scripts/build_webfonts.py）
+ *   正文：更纱黑体 SC     标题/重点：思源宋体 粗     特殊字（读数、品牌字）：得意黑
+ * 族名加 "CG " 前缀，避免和本机装的同名字体混用；本机没有子集里的字时按字回退到后面的系统字体。
+ */
+@font-face { font-family: "CG Sarasa"; src: url("../assets/fonts/sarasa-sc-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "CG Sarasa"; src: url("../assets/fonts/sarasa-sc-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "CG Serif"; src: url("../assets/fonts/source-han-serif-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "CG Smiley"; src: url("../assets/fonts/smiley-sans.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+
+/*
  * 农智云 · 视觉基调
  * 布局：植保站"标本台"——浅灰绿底板如同标本衬板，检测结果以标本签呈现；
  *       数字用窄体（仪表读数感），数据用等宽体，中文用系统黑体（离线、不打包中文字体）。
@@ -40,8 +50,9 @@
   --s3: #4a3aa7;
   --s4: #eda100;
 
-  --font-cn: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
-  --font-num: "Barlow Condensed", "Arial Narrow", var(--font-cn);
+  --font-cn: "CG Sarasa", "Sarasa Gothic SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-serif: "CG Serif", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --font-num: "CG Smiley", "Smiley Sans", var(--font-cn);
   --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 
   --r-sm: 3px;
@@ -135,12 +146,16 @@ img { max-width: 100%; }
 [hidden] { display: none !important; }
 button, input, select, textarea { font: inherit; color: inherit; }
 h1, h2, h3, p, ul, figure { margin: 0; }
-h2 { font-size: 15px; font-weight: 700; text-wrap: balance; }
+h1, h2 { font-family: var(--font-serif); font-weight: 700; text-wrap: balance; }
+h2 { font-size: 15px; }
+/* 标题/重点：思源宋体（标本名、风险等级、页面标题等用这个类） */
+.serif { font-family: var(--font-serif); font-weight: 700; }
 a { color: var(--brand); }
 
 :focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
 
-.num { font-family: var(--font-num); font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+/* 特殊字：得意黑只有一个字重（自带斜体造型），禁止浏览器再合成粗体/斜体 */
+.num { font-family: var(--font-num); font-weight: 400; font-synthesis: none; line-height: 1; font-variant-numeric: tabular-nums; }
 .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .latin { font-family: var(--font-mono); font-style: italic; }
 .muted { color: var(--ink-3); }

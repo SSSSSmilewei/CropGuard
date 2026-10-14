@@ -290,7 +290,7 @@ const LOOP = [
 .kpi:first-child { border-left: 0; }
 .kpi .k { font-size: 12px; color: var(--ink-3); }
 .kpi .v { font-size: 38px; margin: 8px 0 6px; }
-.kpi .v small { font-size: 18px; color: var(--ink-2); font-weight: 500; }
+.kpi .v small { font-size: 18px; color: var(--ink-2); }
 .kpi .s { font-size: 12px; color: var(--ink-2); line-height: 1.5; overflow-wrap: anywhere; }
 @media (max-width: 1180px) {
   .kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -324,7 +324,7 @@ const LOOP = [
 .cls.on { background: var(--inset); }
 .rank { font-size: 11px; color: var(--ink-3); text-align: right; }
 .cname { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
-.cname b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cname b { font-family: var(--font-serif); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cname .latin { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bar { position: relative; height: 10px; background: var(--inset); border-radius: 0 4px 4px 0; }
 .bar > span { display: block; height: 100%; background: var(--line-strong); border-radius: 0 4px 4px 0; }
@@ -339,7 +339,7 @@ const LOOP = [
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .sample.miss .thumb { outline: 2px solid var(--risk-high); outline-offset: 2px; }
 .sn { display: flex; justify-content: space-between; gap: 6px; font-size: 13px; }
-.sn b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn b { font-family: var(--font-serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sn .mono { font-size: 12px; color: var(--ink-2); }
 .sample .latin { font-size: 10.5px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sm { display: flex; justify-content: space-between; gap: 6px; font-size: 11.5px; color: var(--ink-3); }

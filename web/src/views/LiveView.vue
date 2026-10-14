@@ -322,7 +322,7 @@ const connText = computed(() => ({ wait: '正在打开相机…', on: '已连接
 .bg-none { background: var(--line-strong); }
 .tl-axis { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; color: var(--ink-3); }
 .risk-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0 10px; }
-.risk-lv { font-size: 30px; font-weight: 700; line-height: 1.15; }
+.risk-lv { font-family: var(--font-serif); font-size: 30px; font-weight: 700; line-height: 1.2; }
 .risk-dt { font-size: 13px; color: var(--ink-2); }
 .det-list { display: flex; flex-direction: column; }
 .det { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }

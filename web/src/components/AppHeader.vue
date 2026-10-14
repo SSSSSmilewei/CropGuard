@@ -63,8 +63,8 @@ const voice = computed(() => {
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); }
-.name { font-size: 18px; font-weight: 700; letter-spacing: 0.04em; }
-.en { font-family: var(--font-num); font-size: 15px; font-weight: 600; letter-spacing: 0.12em; color: var(--ink-3); }
+.name { font-family: var(--font-num); font-size: 21px; font-weight: 400; font-synthesis: none; letter-spacing: 0.06em; }
+.en { font-family: var(--font-num); font-size: 15px; font-weight: 400; font-synthesis: none; letter-spacing: 0.12em; color: var(--ink-3); }
 .nav { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
 .nav-link {
   padding: 20px 14px 18px; color: var(--ink-2); text-decoration: none; white-space: nowrap;

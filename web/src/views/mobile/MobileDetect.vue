@@ -254,7 +254,7 @@ const shownRisk = computed(() => (mode.value === 'live' ? liveRisk.value : resul
   border: 1.5px dashed var(--line-strong); border-radius: var(--r-lg); background: var(--panel);
   color: var(--brand); cursor: pointer; text-align: center;
 }
-.hero .h1 { font-size: 17px; font-weight: 700; color: var(--ink); }
+.hero .h1 { font-family: var(--font-serif); font-size: 18px; font-weight: 700; color: var(--ink); }
 .hero .h2 { font-size: 13px; color: var(--ink-3); }
 .shot { border-radius: var(--r-lg); overflow: hidden; }
 .live-view { position: relative; background: var(--stage); border-radius: var(--r-lg); overflow: hidden; max-height: 56vh; margin: 0 auto; width: 100%; }
@@ -267,7 +267,7 @@ const shownRisk = computed(() => (mode.value === 'live' ? liveRisk.value : resul
 .hint { font-size: 12px; color: var(--ink-3); }
 .risk-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
 .rr { min-width: 0; }
-.rl { font-size: 18px; font-weight: 700; line-height: 1.2; }
+.rl { font-family: var(--font-serif); font-size: 19px; font-weight: 700; line-height: 1.25; }
 .rd { font-size: 12px; color: var(--ink-2); }
 .rt { margin-left: auto; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
 .measure { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line-strong); font-size: 13px; line-height: 1.7; color: var(--body-ink); }

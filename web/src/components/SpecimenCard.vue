@@ -59,7 +59,7 @@ const corner = (b: number[], from: number) => b.slice(from, from + 2).map((v) =>
 .meta { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; letter-spacing: 0.06em; color: var(--ink-3); }
 .names { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-top: 8px; }
 .latin { font-family: var(--font-mono); font-style: italic; font-size: 13px; color: var(--ink-2); }
-.cn { font-size: 22px; font-weight: 700; line-height: 1.3; }
+.cn { font-family: var(--font-serif); font-size: 22px; font-weight: 700; line-height: 1.35; }
 .readings {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px;
   margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line-strong);

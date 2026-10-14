@@ -88,7 +88,7 @@ const TITLES: Record<Tab, string> = { detect: '农智云', chat: '农技问答',
   padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px 16px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
-.m-title { font-size: 17px; font-weight: 700; }
+.m-title { font-family: var(--font-serif); font-size: 18px; font-weight: 700; }
 .m-status { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .m-body {
   flex: 1; display: flex; flex-direction: column; gap: 12px;

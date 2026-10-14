@@ -35,7 +35,7 @@ const blocks = computed(() =>
 .advice { display: flex; flex-direction: column; gap: 10px; font-size: 13.5px; line-height: 1.75; color: var(--body-ink); }
 .h { font-size: 12px; font-weight: 400; letter-spacing: 0.08em; color: var(--ink-3); margin-top: 6px; }
 .h:first-child { margin-top: 0; }
-.sub { font-weight: 700; color: var(--ink); }
+.sub { font-family: var(--font-serif); font-weight: 700; color: var(--ink); }
 .field { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; }
 .fk { font-weight: 700; color: var(--ink); }
 .fv { overflow-wrap: anywhere; }

@@ -88,7 +88,7 @@ const plans = computed(() =>
 .tbl th { text-align: left; font-weight: 400; font-size: 12px; color: var(--ink-3); padding: 0 12px 8px 0; white-space: nowrap; }
 .tbl td { padding: 12px 12px 12px 0; border-top: 1px solid var(--line); vertical-align: top; }
 .tbl .r { text-align: right; }
-.strong { font-weight: 700; }
+.strong { font-family: var(--font-serif); font-weight: 700; }
 .st { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
 .err { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
 .addr { font-size: 12px; overflow-wrap: anywhere; }
