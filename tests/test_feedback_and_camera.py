@@ -45,12 +45,13 @@ def fake_engine():
     所以这里先丢掉那条记录，让用例从干净的 sink 开始。
     """
     sink = []
-    original = tts_mod._build_backend
+    # 后端构建已收拢到 BackendRegistry.build（旧的模块级 _build_backend 已删）
+    original = tts_mod.BackendRegistry.build
 
-    def _build(prefer='auto'):
-        return _FakeBackend(sink), [], []
+    def _build(self, rate, volume, selftest=True):
+        return _FakeBackend(sink), 'fake', []
 
-    tts_mod._build_backend = _build
+    tts_mod.BackendRegistry.build = _build
     eng = TTSEngine(enabled=True, engine='auto')
     TTSEngine.wait_backend(eng, timeout=3)
     time.sleep(0.2)
@@ -59,7 +60,7 @@ def fake_engine():
         yield eng, sink
     finally:
         eng.close()
-        tts_mod._build_backend = original
+        tts_mod.BackendRegistry.build = original
 
 
 @test_case

@@ -8,24 +8,28 @@
 * 字节模式（Byte mode, UTF-8）
 * 纠错等级 L（7%），版本 1~10（URL 三十来个字符 → 通常版本 2~3）
 * 固定掩码 0：标准允许任意掩码，只是压缩率略差，扫得出来就行
+* 正确性用 tests/test_qr.py 对照 OpenCV 解码器逐版本验证（v1~v10）
 
 如果你有更严格的需求（纠错等级高、版本大），换回 `qrcode` 库更省事；
 这里坚持手写是为了"零新依赖、离线可跑"。
 """
 
-# --- 版本参数表（纠错等级 L）：(每块数据码字, 纠错码字/块, 块数1, 块数2) ---
+# --- 版本参数表（纠错等级 L）：(每块数据码字, 纠错码字/块, 第1组块数, 第2组块数) ---
 # 数据来自 ISO/IEC 18004 表 9（等级 L）。只列版本 1~10。
+# 第 2 组的每块数据码字 = 第 1 组 + 1（版本 10：2 块×68 + 2 块×69）。
+# ⚠️ 旧表把 v6~v9 的"总数据码字"误写成"每块数据码字"（v6 写成 136×2 块），
+#    交错后码字总数超出矩阵容量，URL 一过 106 字节生成的码就扫不出来。
 _EC_L = {
     1: (19, 7, 1, 0),
     2: (34, 10, 1, 0),
     3: (55, 15, 1, 0),
     4: (80, 20, 1, 0),
     5: (108, 26, 1, 0),
-    6: (136, 18, 2, 0),
-    7: (156, 20, 2, 0),
-    8: (194, 24, 2, 0),
-    9: (232, 30, 2, 0),
-    10: (274, 18, 2, 2),
+    6: (68, 18, 2, 0),
+    7: (78, 20, 2, 0),
+    8: (97, 24, 2, 0),
+    9: (116, 30, 2, 0),
+    10: (68, 18, 2, 2),
 }
 _TOTAL_CODEWORDS = {
     1: 26, 2: 44, 3: 70, 4: 100, 5: 134, 6: 172,
@@ -108,7 +112,7 @@ def _encode_data(text, version):
     for b in data:
         push(b, 8)
 
-    total_data_codewords = _EC_L[version][0] * (_EC_L[version][2] + _EC_L[version][3])
+    total_data_codewords = _data_codewords(version)
     capacity_bits = total_data_codewords * 8
     # 结束符最多 4 位
     push(0, min(4, capacity_bits - len(bits)))
@@ -124,21 +128,31 @@ def _encode_data(text, version):
     return codewords
 
 
+def _data_codewords(version):
+    per_block, _ec, blocks1, blocks2 = _EC_L[version]
+    return per_block * blocks1 + (per_block + 1) * blocks2
+
+
 def _interleave(codewords, version):
     data_per_block, ec_len, blocks1, blocks2 = _EC_L[version]
-    nblocks = blocks1 + blocks2
-    assert len(codewords) == data_per_block * nblocks, (len(codewords), version)
+    assert len(codewords) == _data_codewords(version), (len(codewords), version)
 
-    blocks = [codewords[i * data_per_block:(i + 1) * data_per_block] for i in range(nblocks)]
+    sizes = [data_per_block] * blocks1 + [data_per_block + 1] * blocks2
+    blocks, pos = [], 0
+    for n in sizes:
+        blocks.append(codewords[pos:pos + n])
+        pos += n
     ec_blocks = [_rs_encode(b, ec_len) for b in blocks]
 
     out = []
-    for i in range(data_per_block):                       # 数据区按列交错
+    for i in range(max(sizes)):                           # 数据区按列交错（短块先取完）
         for b in blocks:
-            out.append(b[i])
+            if i < len(b):
+                out.append(b[i])
     for i in range(ec_len):                               # 纠错区按列交错
         for b in ec_blocks:
             out.append(b[i])
+    assert len(out) == _TOTAL_CODEWORDS[version], (len(out), version)
     return out
 
 
@@ -185,6 +199,8 @@ def _matrix(text):
 
     # ---- 4) 预留格式信息区（内容稍后填）----
     for i in range(9):
+        if i == 6:
+            continue                        # (8,6)/(6,8) 属于定时图案，不能被清成 0
         place_function(8, i, 0)
         place_function(i, 8, 0)
     for i in range(8):
@@ -230,18 +246,23 @@ def _matrix(text):
                 m[r][c] ^= 1
 
     # ---- 格式信息：纠错 L(01) + 掩码 0(000) ----
+    # 坐标是 (行, 列)。⚠️ 旧实现把两份格式信息整体写成了转置（行列对调），
+    # 扫码器读出的纠错等级/掩码全错，**所有版本**生成的码都扫不出来。
     fmt = _format_bits(0b01, 0b000)
+    # 第一份：左上定位图案旁（第 8 列自上而下 0~8，再第 8 行自右向左）
     for i in range(6):
-        place_function(8, i, (fmt >> i) & 1)
-    place_function(8, 7, (fmt >> 6) & 1)
+        place_function(i, 8, (fmt >> i) & 1)
+    place_function(7, 8, (fmt >> 6) & 1)
     place_function(8, 8, (fmt >> 7) & 1)
-    place_function(7, 8, (fmt >> 8) & 1)
+    place_function(8, 7, (fmt >> 8) & 1)
     for i in range(9, 15):
-        place_function(14 - i, 8, (fmt >> i) & 1)
+        place_function(8, 14 - i, (fmt >> i) & 1)
+    # 第二份：右上（第 8 行）+ 左下（第 8 列）
     for i in range(8):
-        place_function(size - 1 - i, 8, (fmt >> i) & 1)
+        place_function(8, size - 1 - i, (fmt >> i) & 1)
     for i in range(8, 15):
-        place_function(8, size - 15 + i, (fmt >> i) & 1)
+        place_function(size - 15 + i, 8, (fmt >> i) & 1)
+    place_function(size - 8, 8, 1)          # 固定深色模块（不能被格式位覆盖）
     return m
 
 
@@ -264,12 +285,13 @@ def _fn_matrix(size, version):
             mark(i, j)
             mark(i, size - 8 + j)
             mark(size - 8 + i, j)
-    for i in range(9):                          # 格式信息（两处） + 固定深色模块
+    for i in range(9):                          # 格式信息第一份（左上，各 9 格）
         mark(8, i)
         mark(i, 8)
-        mark(8, size - 1 - i)
-        mark(size - 1 - i, 8)
-    mark(size - 8, 8)
+    for i in range(8):                          # 第二份（右上/左下各 8 格）——
+        mark(8, size - 1 - i)                   # ⚠️ 旧代码这里也用 range(9)，多占了
+        mark(size - 1 - i, 8)                   # (8, size-9)/(size-9, 8) 两个数据格，
+    mark(size - 8, 8)                           # 后面所有数据位整体错位 → 扫不出来
     centers = _ALIGN[version]
     for r0 in centers:                          # 对齐图案
         for c0 in centers:

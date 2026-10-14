@@ -32,7 +32,7 @@ import time
 from datetime import datetime
 
 from llm import guard, local_llm
-from llm.retriever import get_retriever as _get_retriever
+from llm.retriever import get_retriever as _get_retriever, gate_score
 
 # 保持旧调用点兼容：api_server.py 直接取召回器单例
 get_retriever = _get_retriever
@@ -157,22 +157,30 @@ def _log_qa(record, path):
         with _log_lock:
             with open(full, 'a', encoding='utf-8') as f:
                 f.write(json.dumps(record, ensure_ascii=False) + '\n')
-    except Exception:
-        pass
+    except Exception as exc:
+        # 留痕是"答辩举证无依据不生成"的依据，写失败必须能看见，不能静默
+        print(f'[QA] 问答留痕写入失败 ({full}): {type(exc).__name__}: {exc}', flush=True)
 
 
 # ---------------------------------------------------------------- RAG 阶段
 def _retrieve(question, context, cfg, retriever=None):
-    """召回 + 格式化引用。返回 (chunks, top_score, citations)。"""
+    """召回 + 格式化引用。返回 (chunks, top_score, citations)。
+
+    top_score 用 gate_score（见 retriever.gate_score）：只认"问题本身"的相关度
+    （含提问里点名的害虫），不认检测上下文/意图带来的加权 —— 否则带检测
+    上下文时库外问题也能过闸，"无依据不生成"就失效了。
+    """
     r = retriever or get_retriever()
     ctx_pests = pests_from_context(context)
     named = r.detect_pests(question)
     chunks = r.search(question, top_k=int(cfg.get('top_k', 4)),
                       pest_filter=named or None,
                       context_pests=ctx_pests or None)
-    top = chunks[0]['score'] if chunks else 0.0
+    top = gate_score(chunks)
     citations = [{'id': c['id'], 'title': c['title'], 'type': c['type'],
                   'pest': c['pest'], 'cn': c['cn'], 'score': c['score'],
+                  'raw_score': c.get('raw_score', c['score']),
+                  'gate_score': c.get('gate_score', c.get('raw_score', c['score'])),
                   'source': c.get('source', '')} for c in chunks]
     return chunks, top, citations
 
@@ -326,7 +334,8 @@ _GROUP_WORDS = {
            '片区2', '第2片区', '2片区', '二区'],
     'all': ['all', '全部', '全体', '都', '所有', '全部片区'],
 }
-_SPRAY_WORDS = ['喷', '喷洒', '喷淋', '喷药', '打药', '洒水', '雾化', '执行', '启动']
+# "执行/启动"太宽（"启动识别/执行一次检测"会被误判成喷洒），只保留明确的喷洒动词
+_SPRAY_WORDS = ['喷', '喷洒', '喷淋', '喷药', '打药', '洒水', '雾化', '喷水', '浇']
 
 # 危险词：出现这些一律不允许直接执行，只给人工确认/拒绝
 # 注意要覆盖"加大剂量/多喷/超量"这类会伤作物或烧雾化片的说法

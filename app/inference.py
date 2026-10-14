@@ -23,19 +23,30 @@ from app.state import (
 )
 
 
+_model_lock = threading.Lock()
+
+
 # ---------------------------------------------------------------- 单次推理
-def _predict_and_format(img, conf=None):
-    """检测 + 风险评估 + 结果图，返回统一 JSON 结构（供 REST 与 WebSocket 复用）。"""
+def _predict_and_format(img, conf=None, draw=True):
+    """检测 + 风险评估 + 结果图，返回统一 JSON 结构（供 REST 与 WebSocket 复用）。
+
+    draw=False 时 result_image 是**原始帧**：实时流由前端按 bbox 叠框，
+    帧与框来自同一次推理，任意缩放都对得上，也省掉服务器画框的开销。
+    """
     if conf is None:
         conf = conf_thres
     t_start = time.time()
-    results = yolo_model.predict(img, imgsz=imgsz, conf=conf, device=device)
+    # ultralytics 的 predictor 不是线程安全的：推理泵、/ws/phone、/api/detect
+    # 都在线程池里并发调用同一个模型，不串行化会出现结果串台/偶发异常。
+    with _model_lock:
+        results = yolo_model.predict(img, imgsz=imgsz, conf=float(conf), device=device,
+                                     verbose=False)
     formatted = format_data(results)
     inference_time = round(time.time() - t_start, 3)
 
     risk_level, risk_color, risk_detail = assess_risk(formatted, img.shape[:2])
 
-    result_img = draw_info(img.copy(), formatted)
+    result_img = draw_info(img.copy(), formatted) if draw else img
     _, buffer = cv2.imencode('.jpg', result_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
     result_b64 = base64.b64encode(buffer).decode('utf-8')
 
@@ -57,12 +68,20 @@ def _predict_and_format(img, conf=None):
         "risk": {"level": risk_level, "detail": risk_detail},
         "inference_time": inference_time,
         "result_image": result_b64,
+        "image_size": [int(img.shape[1]), int(img.shape[0])],
         "timestamp": datetime.now().isoformat(),
     }
-    # 记下最近一次检测，供 /api/ask 在未显式传 context 时"结合当前虫情"回答
-    _last_result["result"] = {"detections": detections,
-                              "risk": res["risk"]}
     return res
+
+
+def _remember_sample(res):
+    """记下用户主动提交的最近一次样本（/api/detect），供 /api/ask 未传 context 时兜底。
+
+    以前每次推理都覆盖这里：相机推理泵每秒 5 次、手机实时帧也在写，
+    结果问"这个虫怎么防治"拿到的是别的客户端刚推理的画面（常常是"无虫"）。
+    """
+    _last_result["result"] = {"detections": res.get("detections") or [],
+                              "risk": res.get("risk") or {}}
 
 
 def _kb_advice_from_result(res):
@@ -130,49 +149,63 @@ def _linkage(risk_level, detections, zone_group=None):
 
 
 # ---------------------------------------------------------------- 共享推理泵（多客户端只跑一份推理）
+def _zone_group_of(key):
+    """相机 key → 片区分组（CONFIG.cameras 里 id 对应的 group）。"""
+    cam_id = str(key[1] if isinstance(key, tuple) and len(key) > 1 else key).strip().lower()
+    for c in cfg_cameras:
+        if str(c.get('id', '')).strip().lower() == cam_id:
+            return str(c.get('group', '') or '')
+    return ''
+
+
 async def _infer_pump(stop_event):
-    """后台推理循环：按 infer_fps 从共享相机源取帧推理，结果供所有客户端读取。"""
+    """后台推理循环：每轮把**每一路**在线相机各推理一次，结果按相机 key 分开存。
+
+    旧实现每轮只取 `_CAM_SOURCES` 的第一路：双片区时 B 区永远没有结果，
+    而 B 区客户端读到的又是 A 区的全局结果（跨区污染：A 区虫情触发 B 区画面/播报）。
+    """
     infer_fps = float(cfg_camera.get('infer_fps', 5) or 5)
     interval = 1.0 / max(infer_fps, 0.5)
+    loop = asyncio.get_running_loop()
     while not stop_event.is_set():
-        item = None
         with _pump_lock:
-            for key, src in _CAM_SOURCES.items():
-                item = (key, src)
-                break
+            items = list(_CAM_SOURCES.items())
+        if not items:
             # 没有相机（比如 /ws/phone 只用手机画面）时退化为空转
-            if not _CAM_SOURCES:
-                item = None
-        if item is None:
             await asyncio.sleep(0.3)
             continue
-        key, src = item
-        ok, frame = src.read()
-        if not ok or frame is None:
-            await asyncio.sleep(0.2)
-            continue
-        try:
-            result = await asyncio.get_running_loop().run_in_executor(
-                None, _predict_and_format, frame)
-        except Exception:
-            traceback.print_exc()
-            await asyncio.sleep(0.5)
-            continue
-        zone_group = ''
-        for c in cfg_cameras:
-            if str(c.get('id', '')).strip().lower() == str(key[1]).strip().lower():
-                zone_group = str(c.get('group', '') or '')
+        t_round = time.time()
+        for key, src in items:
+            if stop_event.is_set():
                 break
-        risk_level = result['risk']['level']
-        if risk_level in ('高风险', '中风险'):
-            await asyncio.get_running_loop().run_in_executor(
-                None, _linkage, risk_level, result['detections'], zone_group)
+            ok, frame = src.read()
+            if not ok or frame is None:
+                continue
+            try:
+                result = await loop.run_in_executor(None, _predict_and_format, frame, None, False)
+            except Exception:
+                traceback.print_exc()
+                await asyncio.sleep(0.5)
+                continue
+            risk_level = result['risk']['level']
+            if risk_level in ('高风险', '中风险'):
+                await loop.run_in_executor(
+                    None, _linkage, risk_level, result['detections'], _zone_group_of(key))
+            now = time.time()
+            with _pump_lock:
+                slot = _pump_state['by_key'].setdefault(key, {'seq': 0})
+                slot['last'] = result
+                slot['last_ts'] = now
+                slot['seq'] += 1
+                _pump_state['last'] = result
+                _pump_state['last_ts'] = now
+                _pump_state['seq'] += 1
+                _pump_state['count'] += 1
+        # 已下线的相机（客户端都走了）别把旧结果留给下一个订阅者
         with _pump_lock:
-            _pump_state['last'] = result
-            _pump_state['last_ts'] = time.time()
-            _pump_state['seq'] += 1
-            _pump_state['count'] += 1
-        await asyncio.sleep(interval)
+            for k in [k for k in _pump_state['by_key'] if k not in _CAM_SOURCES]:
+                _pump_state['by_key'].pop(k, None)
+        await asyncio.sleep(max(0.0, interval - (time.time() - t_round)))
 
 
 def _ensure_pump():
@@ -189,14 +222,22 @@ def _ensure_pump():
         return task
 
 
-def _latest_result(max_age=None):
-    """取共享推理的最新结果 (result, age)；age 过大视为过期。"""
+def _latest_result(key=None, max_age=None):
+    """取共享推理的最新结果 (result, age, seq)。
+
+    key 给定时只取**该路相机**的结果（多片区互不串台）；None 取全局最新一条。
+    """
     with _pump_lock:
-        result = _pump_state.get('last')
-        ts = _pump_state.get('last_ts') or 0.0
+        if key is None:
+            result = _pump_state.get('last')
+            ts = _pump_state.get('last_ts') or 0.0
+            seq = _pump_state.get('seq', 0)
+        else:
+            slot = _pump_state['by_key'].get(key) or {}
+            result = slot.get('last')
+            ts = slot.get('last_ts') or 0.0
+            seq = slot.get('seq', 0)
     age = time.time() - ts if ts else None
     if result is None:
-        return None, None
-    if max_age is not None and (age is None or age > max_age):
-        return result, age
-    return result, age
+        return None, None, seq
+    return result, age, seq

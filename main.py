@@ -5,6 +5,7 @@ import os
 import sys
 import threading
 import queue
+import ast
 
 # CRITICAL: torch must be imported before PyQt5 to avoid DLL conflicts
 import cv2
@@ -18,7 +19,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox, QFileDialog
 from PyQt5 import QtCore, QtWidgets, QtGui
 from PyQt5.QtGui import QColor
 
-from UI import Ui_MainWindow
+from UI import Ui_MainWindow, APP_STYLE, TABLE_COLUMN_WIDTHS
 
 from tool.parser import get_config
 from tool.tools import draw_info, result_info_format, format_data, writexls, writecsv, assess_risk
@@ -47,7 +48,7 @@ label_control_color = _cfg_ui.get('label_control_color', '255,255,255, 80')
 label_img_color = _cfg_ui.get('label_img_color', '255,255,255, 80')
 _table_style = _cfg_ui.get('table_widget_info_styles', {}) or {}
 header_background_color = _table_style.get('header_background_color', '48,77,49')
-header_color = _table_style.get('header_color', '112,63,46')
+header_color = _table_style.get('header_color', '255,255,255')
 
 # 摄像头配置
 # 选相机优先用"设备标识"，数字索引只作兜底 ——
@@ -120,6 +121,11 @@ HISTORY_DIR = str(_cam_cfg.get('history_dir', './output/snapshots') or './output
 _snap_resume_cfg = _cam_cfg.get('snap_resume_ms', 400)
 SNAP_RESUME_MS = 400 if _snap_resume_cfg is None else max(0, int(_snap_resume_cfg))
 
+# 实时流投递给推理线程时用的固定帧名。拍照/图片/文件夹都用别的名字，
+# 结果回来时靠它区分"实时帧"与"样本采集"（见 on_detect_result 的竞态说明）。
+LIVE_FRAME_NAME = 'camera_frame.jpg'
+SNAP_FRAME_NAME = 'camera_snap.jpg'
+
 # ---- 现场评测（准确度 20 分 + 时效性 10 分 = 30 分）----
 # 口径见 config/configs.yaml 的 EVAL 段注释。
 _eval_cfg = config.get('EVAL', {}) or {}
@@ -183,7 +189,8 @@ imgsz = int(_cfg_model.get('IMGSIZE', 640) or 640)
 device = _cfg_model.get('DEVICE', 'cuda:0')
 _cfg_classes = _cfg_model.get('CLASSES', None)
 try:
-    classes = eval(_cfg_classes) if isinstance(_cfg_classes, str) else _cfg_classes
+    # literal_eval 而不是 eval：配置文件里的字符串不该能执行任意代码
+    classes = ast.literal_eval(_cfg_classes) if isinstance(_cfg_classes, str) else _cfg_classes
 except Exception:
     classes = None
 if str(device).startswith('cuda') and not torch.cuda.is_available():
@@ -465,8 +472,12 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         # 打开图片
         self.pushButton_img.clicked.connect(self.open_img)
 
-        # 异步建议线程w
+        # 异步建议线程 / 问答线程。⚠️ 不能只用一个属性引用：连点两次时第二次赋值会让
+        # 第一个仍在运行的 QThread 失去最后一个 Python 引用被析构，
+        # Qt 直接 abort（"QThread: Destroyed while thread is still running"）→ 整个 GUI 闪退。
+        # 所以所有在跑的线程都放进这个集合，finished 之后才移除。
         self.advice_thread = None
+        self._live_threads = set()
         # 打开文件夹
         self.pushButton_dir.clicked.connect(self.open_dir)
         # 打开视频
@@ -515,6 +526,17 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_frame)
+
+        # 后台任务轮询（相机打开 / 相机探测的结果都从队列里取）。
+        # 原来探测结果只在 update_frame 里取，而相机打不开时 update_frame 根本不跑，
+        # 结果就永远显示不出来。独立一个低频定时器，常驻运行。
+        self._cam_open_q = queue.Queue()
+        self._cam_open_token = 0          # 当前有效的打开请求（关闭/切源时 +1 作废旧请求）
+        self._cam_open_launched = 0       # 最近一次真正发起的后台打开
+        self._cam_opening = False
+        self.bg_timer = QtCore.QTimer()
+        self.bg_timer.timeout.connect(self._poll_background)
+        self.bg_timer.start(150)
 
         # 摄像头采集线程 / 后台推理线程
         self.camera = None
@@ -593,25 +615,42 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self.label_title.setText(label_title)
         # 背景图用配置里的 UI.background（原来这里引用了不存在的 background_img，
         # 一启动就 NameError 崩溃 —— 已修）。图片缺失时只跳过背景，不影响其他配置。
+        # ⚠️ 必须在 APP_STYLE 后面追加，不能直接 setStyleSheet(背景规则) ——
+        #    那会把整窗样式表（按钮悬停/按下/禁用态、表格样式）整个替换掉。
         try:
+            qss = APP_STYLE
             if background and os.path.exists(background):
-                self.setStyleSheet("#centralwidget {background-image: url('%s')}" % background)
+                bg = os.path.abspath(background).replace('\\', '/')
+                qss += "\n#centralwidget {background-image: url('%s')}" % bg
+            self.setStyleSheet(qss)
         except Exception:
             traceback.print_exc()
         self.label_img.setPixmap(QtGui.QPixmap(zhutu2))
-        self.label_control.setStyleSheet("background-color: rgba(%s); border-radius: 15px;" % label_control_color)
-        self.label_img.setStyleSheet("background-color: rgba(%s); border-radius: 15px;" % label_img_color)
+        self.label_control.setStyleSheet(
+            "background-color: rgba(%s); border-radius: 14px; border: 1px solid rgba(255,255,255,120);"
+            % label_control_color)
+        self.label_img.setStyleSheet(
+            "background-color: rgba(%s); border-radius: 14px; border: 1px solid rgba(255,255,255,120);"
+            % label_img_color)
         # 设置 tableWidget 表头的样式
+        # （原来写成 `color: 112,63,46` 少了 rgb()，是无效 QSS，配置的字色从未生效）
         header_style_sheet = """
                     QHeaderView::section {{
                         background-color: rgb({header_background_color});
-                        color: {header_color};
+                        color: rgb({header_color});
+                        border: none; padding: 6px 4px; font-weight: 600;
                     }}
                     """.format(
             header_background_color=header_background_color,
             header_color=header_color
         )
-        self.tableWidget_info.horizontalHeader().setStyleSheet(header_style_sheet)
+        hh = self.tableWidget_info.horizontalHeader()
+        hh.setStyleSheet(header_style_sheet)
+        # 表头套上样式表后 Qt 会按字体重算"最小列宽"（实测被抬到 170px），
+        # setupUi 里设的列宽全部失效、右侧几列被挤出可视区 → 这里显式压回去再设一次
+        hh.setMinimumSectionSize(40)
+        for i, w in enumerate(TABLE_COLUMN_WIDTHS):
+            self.tableWidget_info.setColumnWidth(i, w)
 
     def cell_clicked(self, row, column):
         """点历史行 → 定格回看当时那张带框快照，并恢复右侧信息栏。
@@ -697,7 +736,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         path = rec.get('image_path')
         short = os.path.basename(path) if path else '(无图)'
         values = [rec.get('no'), short,
-                  rec.get('time'), str(rec.get('results') or []),
+                  rec.get('time'), self._results_text(rec.get('results')),
                   len(rec.get('results') or []), rec.get('consum'),
                   {None: '—', '正确': '✓ 正确', '错误': '✗ 错误'}.get(verdict, '—'),
                   rec.get('saved') or '待保存']
@@ -707,6 +746,8 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             item.setForeground(QColor.fromRgb(column_color[0], column_color[1], column_color[2]))
             if column == 0:
                 item.setData(QtCore.Qt.UserRole, rec)
+            if column in (1, 3):
+                item.setToolTip(path or '' if column == 1 else str(content))
             if column == 6:
                 # 评判列上色，评委一眼能扫出已判/未判
                 if verdict == '正确':
@@ -716,6 +757,23 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 else:
                     item.setForeground(QColor(140, 140, 140))
             self.tableWidget_info.setItem(row, column, item)
+
+    def _results_text(self, results):
+        """识别结果给人看：'蚜虫(aphids) 91%、粘虫(army_worm) 77%'。
+
+        原来直接 str(list) —— 表格里是 [['aphids', 0.91, [200.0, ...]]]，评委根本没法看。
+        保留英文类名：现场核对标签/权重时要用。
+        """
+        parts = []
+        for r in (results or []):
+            try:
+                name, conf = r[0], float(r[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            cn = self.chinese_name.get(name, name) if isinstance(self.chinese_name, dict) else name
+            label = f'{cn}({name})' if cn != name else str(name)
+            parts.append(f'{label} {conf:.0%}')
+        return '、'.join(parts) or '—'
 
     def _find_row_by_record(self, rec):
         """按 uid 找行号；找不到返回 None。
@@ -947,6 +1005,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
     def open_img(self):
         """打开单张图片"""
         try:
+            self._cam_open_token += 1      # 切到别的输入源：后台还没开完的相机作废
             self.update_comboBox_default()
             self.img_path, filetype = QFileDialog.getOpenFileName(
                 None, "选择文件", self.ProjectPath,
@@ -970,6 +1029,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
     def open_dir(self):
         try:
+            self._cam_open_token += 1      # 切到别的输入源：后台还没开完的相机作废
             self.update_comboBox_default()
             self.img_path_dir = QFileDialog.getExistingDirectory(None, "选择文件夹")
             if not self.img_path_dir:
@@ -1000,6 +1060,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
     def open_video(self):
         try:
+            self._cam_open_token += 1      # 切到别的输入源：后台还没开完的相机作废
             self.update_comboBox_default()
             self.video_path, filetype = QFileDialog.getOpenFileName(None, "选择文件", self.ProjectPath,
                                                                      "mp4 Video (*.mp4);;avi Video (*.avi)")
@@ -1035,7 +1096,8 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             text = self.label_camera_path.text()
 
             # ---------- 关闭 ----------
-            if text == ' 摄像头已打开':
+            if text == ' 摄像头已打开' or (self._cam_opening and self.start_type == 'camera'):
+                self._cam_open_token += 1      # 后台还在打开的话，结果到了直接作废
                 self.pushButton_start.setText("开始运行 >")
                 self.label_camera_path.setText(" 摄像头已关闭")
                 self.start_type = None
@@ -1061,21 +1123,77 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 self.camera.stop()
                 self.camera = None
 
-            # 先取缓存里的共享采集源（camera_source 的池），避免重复打开设备。
-            # camera_spec 可以是设备标识（'vid_0c45'）或数字索引，由 camera_source 解析。
-            self.camera = CameraCapture(camera_spec, CAMERA_WIDTH, CAMERA_HEIGHT,
-                                        CAMERA_FOURCC)
+            # ⚠️ 打开设备 + 等首帧可能要 8 秒以上（冷启动、多策略解析、扫索引），
+            # 原来直接在 UI 线程里做，整个窗口"未响应"。现在丢后台线程，
+            # 结果经队列回到 _poll_background（Qt 控件只在主线程碰）。
+            self._cam_opening = True
+            self._cam_open_token += 1
+            token = self._cam_open_token
+            self._cam_open_launched = token
+            self.label_camera_path.setText(" 正在打开摄像头…")
+            threading.Thread(target=self._open_camera_job, args=(token, camera_spec),
+                             name='CamOpen', daemon=True).start()
+        except Exception as exc:
+            # 关键：这里以前只打 traceback，界面上什么都不显示 ——
+            # 用户就会看到"点了没反应/没画面"。现在把错误写进界面，绝不静默。
+            traceback.print_exc()
+            msg = (f'\n⚠ 打开摄像头时发生异常：{type(exc).__name__}: {exc}\n'
+                   f'（已把详情打到控制台，请把这行发我）')
+            try:
+                self.textEdit_advice.setText(msg)
+                self.label_camera_path.setText(" 摄像头不可用")
+            except Exception:
+                pass
 
-            # start() 只负责"打开设备"；拿到首帧由后台采集线程继续等。
-            # 这里等一会儿（默认 8 秒，见 config 的 CAMERA.probe_timeout），
-            # 因为实测 USB 相机冷启动可能要 3 秒才吐第一帧。
-            if not self.camera.start():
-                st = self.camera.state()
+    def _open_camera_job(self, token, spec):
+        """后台线程：打开相机 + 等首帧，结果放进队列（这里绝不碰 Qt 控件）。"""
+        cam = None
+        try:
+            cam = CameraCapture(spec, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FOURCC)
+            if not cam.start():
+                self._cam_open_q.put((token, cam, 'fail', None))
+                return
+            got = cam.wait_first_frame(timeout=CAMERA_FIRST_FRAME_WAIT)
+            self._cam_open_q.put((token, cam, 'ok' if got else 'noframe', None))
+        except Exception as exc:
+            traceback.print_exc()
+            self._cam_open_q.put((token, cam, 'error', exc))
+
+    def _poll_background(self):
+        """主线程定时器：取相机打开结果 + 相机探测结果。"""
+        try:
+            self._poll_camera_open()
+            if self.start_type != 'camera' or not self.timer.isActive():
+                self._poll_camera_probe()     # 实时刷新在跑时由 update_frame 负责
+        except Exception:
+            traceback.print_exc()
+
+    def _poll_camera_open(self):
+        while True:
+            try:
+                token, cam, status, exc = self._cam_open_q.get_nowait()
+            except queue.Empty:
+                return
+            if token == self._cam_open_launched:
+                self._cam_opening = False
+            if token != self._cam_open_token or self.start_type != 'camera':
+                # 打开期间用户关了摄像头 / 切了输入源：这份结果作废，引用还回去
+                if cam is not None:
+                    cam.stop()
+                continue
+            self._on_camera_opened(cam, status, exc)
+
+    def _on_camera_opened(self, cam, status, exc=None):
+        """相机后台打开完成（主线程）：更新界面。"""
+        try:
+            if status == 'error':
+                raise exc if exc is not None else RuntimeError('未知错误')
+            if status == 'fail':
+                st = cam.state()
                 self._cam_open_error = st.get('last_error') or '未知原因'
-                self.camera.stop()
+                cam.stop()
                 self.camera = None
                 self.start_type = None
-                self.label_camera_path.setText(" 打开摄像头")
                 # 非阻塞提示：写在界面状态栏 + 控制台，不弹模态框
                 self.label_class.setText('摄像头不可用')
                 self.label_score.setText('--')
@@ -1096,10 +1214,9 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 self._start_camera_probe()
                 return
 
-            # 设备已打开：等首帧（后台线程在读，这里只等它把帧填上）
-            got = self.camera.wait_first_frame(timeout=CAMERA_FIRST_FRAME_WAIT)
-            if not got:
-                st = self.camera.state()
+            self.camera = cam
+            if status == 'noframe':
+                st = cam.state()
                 msg = (f"⚠ 摄像头 {camera_spec} 已打开但 {CAMERA_FIRST_FRAME_WAIT:.0f}s 内没出画面"
                        f"（{st.get('last_error') or '无帧'}）；后台仍会继续尝试出帧。")
                 print('[CAM] ' + msg, flush=True)
@@ -1108,25 +1225,21 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 self._start_camera_probe()
                 return
 
-            ok, frame = self.camera.read()
+            ok, frame = cam.read()
             if ok and frame is not None:
                 self.img = frame
-                self.img_name = "camera_frame.jpg"
+                self.img_name = LIVE_FRAME_NAME
                 self.show_frame(frame)
-                st = self.camera.state()
-                # 明确写出"实际打开的是哪个设备" —— 配置写标识后这里就不会再对不上，
-                # 万一以后又出现"用的不是外接相机"，一眼就能从这个标签看出来。
+                st = cam.state()
+                # 明确写出"实际打开的是哪个设备" —— 万一用的不是外接相机，一眼就能看出来
                 self._cam_label = self._camera_label(st)
-                self.label_camera_path.setText(self._cam_label)
                 print(f"[CAM] 画面就绪 设备={st.get('device') or '未知'} "
                       f"index={st.get('index')} size={st.get('size')} fps={st.get('fps')} "
                       f"（点「开始运行 >」进入连续实时检测）", flush=True)
             self.label_camera_path.setText(" 摄像头已打开")
-        except Exception as exc:
-            # 关键：这里以前只打 traceback，界面上什么都不显示 ——
-            # 用户就会看到"点了没反应/没画面"。现在把错误写进界面，绝不静默。
+        except Exception as exc2:
             traceback.print_exc()
-            msg = (f'\n⚠ 打开摄像头时发生异常：{type(exc).__name__}: {exc}\n'
+            msg = (f'\n⚠ 打开摄像头时发生异常：{type(exc2).__name__}: {exc2}\n'
                    f'（已把详情打到控制台，请把这行发我）')
             try:
                 self.textEdit_advice.setText(msg)
@@ -1155,9 +1268,11 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                     self._start_camera_probe()
                     return
                 self.img = frame
-                self.img_name = 'camera_snap.jpg'
+                self.img_name = SNAP_FRAME_NAME
             elif self.img is not None:
                 frame = self.img
+                if self.img_name == LIVE_FRAME_NAME:
+                    self.img_name = SNAP_FRAME_NAME   # 别和实时帧同名，否则结果回来会被当成实时帧
             else:
                 self.textEdit_advice.setText(
                     '请先「打开摄像头」或「打开图片」，再点「📷 拍照识别」。')
@@ -1179,7 +1294,10 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self._sample_capture = True
             if self.eval_t0 is None:
                 self._eval_begin(now=time.time())
-            self.worker.submit(frame, self.img_name or 'camera_snap.jpg')
+            # 扔掉还排在槽里的实时帧：拍照这一帧必须是下一个被推理的
+            if hasattr(self.worker, 'clear'):
+                self.worker.clear()
+            self.worker.submit(frame, self.img_name or SNAP_FRAME_NAME)
             self.input_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print('[CAM] 已拍下当前帧并定格，正在识别…', flush=True)
         except Exception:
@@ -1188,12 +1306,14 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
     def close_camera(self):
         """关闭摄像头：停定时器 + 释放采集源（引用计数归零才真关设备）。"""
         try:
+            self._cam_open_token += 1          # 后台还在打开：结果到了直接作废
             if self.camera is not None:
                 self.camera.stop()
                 self.camera = None
             self.timer.stop()
             self.is_running = False
             self.awaiting_result = False
+            self._snap_pending = False
             self.start_type = None
             self.pushButton_start.setText('开始运行 >')
             self.label_camera_path.setText(' 打开摄像头')
@@ -1361,7 +1481,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
                 # 4) 投递最新一帧给推理线程（线程内部自动丢帧，不会积压）
                 if self.is_running and self.worker is not None:
-                    self.worker.submit(frame.copy(), 'camera_frame.jpg')
+                    self.worker.submit(frame.copy(), LIVE_FRAME_NAME)
 
                 # 5) 渲染：没有检测框时**不拷贝**，直接显示原帧（省一次 2.7MB 拷贝）
                 if self.results:
@@ -1370,7 +1490,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                     display = frame
                 self.img = frame
                 self.img_show = display
-                self.img_name = 'camera_frame.jpg'
+                self.img_name = LIVE_FRAME_NAME
                 self.show_frame(display)
 
                 # 偶尔在状态栏回显实测 fps/帧龄，方便判断"是相机慢还是界面慢"
@@ -1498,7 +1618,9 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
         self._sample_capture = False
 
         # ---- 规则 1：实时流一律不写日志 ----
-        if self.start_type == 'camera' and not is_sample:
+        # 视频逐帧检测和摄像头实时流是同一性质（连续帧，不是"一个样本"），
+        # 写进去会把 20 个评测样本的表格刷满、还会提前触发"满 20 个自动停表"。
+        if self.start_type in ('camera', 'video') and not is_sample:
             return
 
         if not results:
@@ -1579,7 +1701,17 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
 
     def on_detect_result(self, results, result_info, consum_time, input_time,
                          img_name, frame=None):
-        """后台推理线程回调（在 Qt 主线程执行）。frame 是当时推理的那一帧。"""
+        """后台推理线程回调（在 Qt 主线程执行）。frame 是当时推理的那一帧。
+
+        ⚠️ 拍照/实时竞态：实时检测在跑时点「拍照识别」，推理线程里往往**还有一帧实时帧
+        正在推理**。它的结果会先回来 —— 旧代码会把它当成"拍下的那张"：
+        定格错帧、消耗掉"样本采集"标记写进评测日志，真正拍的那张反而不记。
+        180 秒 20 样本的计分就直接被污染。现在按帧名区分：拍照等待期间到达的
+        实时帧结果一律丢弃（不定格、不写日志、不清 awaiting_result）。
+        """
+        is_live = (self.start_type == 'camera' and img_name == LIVE_FRAME_NAME)
+        if is_live and (self._snap_pending or self._sample_capture):
+            return
         self.awaiting_result = False
         self.apply_results(results, result_info, consum_time, input_time, img_name, frame)
 
@@ -1707,8 +1839,11 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 extra = f'（超时 {score["over"]:.0f}s）' if score['over'] else ''
                 self.label_eval_time.setText(
                     f'时效性   {score["time_score"]:.1f} / {EVAL_TIME_FULL:.0f}{extra}')
+            # 还没开始计时：时效性显示 "--"，总分也不能先把 10 分时效性算进去
+            #（原来零样本时面板显示"总分 10.0 / 30"，看着像已经得了分）
+            shown_total = score['acc'] if self.eval_t0 is None else score['score']
             self.label_eval_total.setText(
-                f'总分    {score["score"]:.1f} / {EVAL_TOTAL_FULL:.0f}')
+                f'总分    {shown_total:.1f} / {EVAL_TOTAL_FULL:.0f}')
 
             # ---- 按钮文案随状态切换 ----
             if hasattr(self, 'pushButton_eval_start'):
@@ -1861,9 +1996,14 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
                 self.export_eval_report(silent=True)
             self.eval_timer.stop()
             self.timer.stop()
+            self.bg_timer.stop()
+            self._cam_open_token += 1
             if self.camera is not None:
                 self.camera.stop()
                 self.camera = None
+            # 还在跑的大模型线程：给一点时间收尾，避免进程退出时析构运行中的 QThread
+            for th in list(self._live_threads):
+                th.wait(1500)
             if self.worker is not None:
                 self.worker.stop()
                 self.worker = None
@@ -1907,10 +2047,13 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             )
 
             # 2) 本地大模型异步增强，成功后覆盖知识库版本
+            #    在跑的时候再点只刷新知识库版本，不再叠一个大模型线程
+            if self.advice_thread is not None and self.advice_thread.isRunning():
+                return
             self.advice_thread = LocalAdviceWorker(
                 self.results, pest_text, risk_info, self.chinese_name)
             self.advice_thread.success.connect(self.on_advice_success)
-            self.advice_thread.start()
+            self._start_thread(self.advice_thread)
 
         except Exception as e:
             self.textEdit_advice.setText(f"获取防治建议出错：\n{str(e)}")
@@ -2173,14 +2316,21 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             self.textEdit_advice.append(f'\n你：{q}\n正在检索知识库并调用本地大模型…')
             self._last_chat_question = q
 
-            self.chat_thread = ChatWorker(q, history=self.chat_history,
+            self.chat_thread = ChatWorker(q, history=list(self.chat_history),
                                           context=self._current_context())
-            self.chat_thread.done.connect(self.on_chat_done)
-            self.chat_thread.start()
+            # 问题随线程走：连问两句时，回答要配对到各自的问题上
+            self.chat_thread.done.connect(lambda res, _q=q: self.on_chat_done(res, _q))
+            self._start_thread(self.chat_thread)
         except Exception as exc:
             self.textEdit_advice.append(f'提问失败：{exc}')
 
-    def on_chat_done(self, res: dict):
+    def _start_thread(self, th):
+        """启动 QThread 并持有引用直到它结束（防"连点即崩溃"，见 __init__ 说明）。"""
+        self._live_threads.add(th)
+        th.finished.connect(lambda t=th: self._live_threads.discard(t))
+        th.start()
+
+    def on_chat_done(self, res: dict, question=None):
         """问答返回：显示回答 + 依据 + 防幻觉校验结果。"""
         try:
             res = res or {}
@@ -2209,7 +2359,7 @@ class MyMainWindow(QMainWindow, Ui_MainWindow):
             if tips:
                 self.textEdit_advice.append('［' + ' | '.join(tips) + '］')
 
-            q = getattr(self, '_last_chat_question', '')
+            q = question if question is not None else getattr(self, '_last_chat_question', '')
             if q:
                 self.chat_history.append({'role': 'user', 'content': q})
             self.chat_history.append({'role': 'assistant', 'content': answer})

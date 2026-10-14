@@ -21,6 +21,7 @@
 把 `Retriever` 换成向量检索即可，`search()` 的返回结构保持不变。
 """
 import re
+import threading
 
 from llm.kb_chunks import ALIASES, all_chunks, cn_of
 
@@ -171,19 +172,44 @@ class Retriever:
             return []
 
         scores = self._score(query, [c for _, c in candidates])
+        # 闸门分必须用**问题原文**的改写打分：query 里拼进了上下文害虫名，
+        # 实测"你好"带蚜虫上下文时原始分就被拼进去的"蚜虫"抬到 0.19 > 0.18。
+        # 例外：问题明确指代"当前检测到的虫"（"这个虫怎么治""检测到的害虫…"），
+        # 上下文害虫就等同于被点名 —— 这正是"结合当前虫情提问"的正常用法。
+        refers_ctx = bool(context_pests) and bool(_DEICTIC_RE.search(question or ''))
+        if ctx_names and not refers_ctx:
+            plain_query, _ = self.rewrite(question)
+            plain_scores = self._score(plain_query, [c for _, c in candidates])
+        else:
+            plain_scores = scores
 
         # 意图加权：问"怎么治"就把 control/monitor 片段抬上来
         intent = _intent_boost(question)
         focus = set(pest_filter or []) | set(context_pests or []) | set(hits)
 
-        # 点名（或上下文指向）的害虫加权：相关片段权重抬高
+        # 点名（或上下文指向）的害虫加权：相关片段权重抬高 —— score 只用于**排序**。
+        #
+        # 拒答闸门用 gate_score，口径（实测 sklearn TF-IDF 路径定下来的）：
+        #   * **提问里亲口点名**的害虫加权 → 计入（"蚜虫怎么防治"原始分只有 0.156，
+        #     不计入的话库内高频问题会被误拒）；
+        #   * 检测上下文带来的加权、意图加权 → **不计入**（否则带检测上下文时
+        #     "今天股票怎么样"也能被抬过 refuse_below，"无依据不生成"形同虚设）。
+        named = set(pest_filter or []) | set(hits)
+        if refers_ctx:
+            named |= set(context_pests)
         boosted = []
-        for (idx, chunk), sc in zip(candidates, scores):
+        for (idx, chunk), sc, plain in zip(candidates, scores, plain_scores):
+            raw = float(sc)
+            gate = float(plain)
+            if chunk['pest'] and chunk['pest'] in named:
+                gate = min(1.0, gate * 1.6 + 0.05)
             if chunk['pest'] and chunk['pest'] in focus:
                 sc = min(1.0, sc * 1.6 + 0.05)
             sc = min(1.0, sc + intent.get(chunk['type'], 0.0))
             if sc >= float(min_score or 0):
-                boosted.append(dict(chunk, score=round(float(sc), 4)))
+                boosted.append(dict(chunk, score=round(float(sc), 4),
+                                    raw_score=round(raw, 4),
+                                    gate_score=round(gate, 4)))
         boosted.sort(key=lambda c: c['score'], reverse=True)
         return boosted[:top_k]
 
@@ -214,6 +240,10 @@ class Retriever:
         if not grams:
             return 0.0
         hit = sum(1 for g in grams if g in doc)
+        # 只撞上 1 个字二元组基本是巧合（"推荐一部电影"的"推荐"、"水稻价格"的"水稻"），
+        # 不算相关；否则短问题一个常用词就能拿到 0.2、越过拒答闸门。
+        if hit < 2:
+            return 0.0
         return hit / len(grams)
 
     # ------------------------------------------------------------ 统计
@@ -227,15 +257,35 @@ class Retriever:
         }
 
 
+# 指代"当前检测结果"的说法（只用于闸门判断上下文是否算"被点名"）
+_DEICTIC_RE = re.compile(
+    r'(这|该|此|那)(个|种|只|些|类)?(虫|害虫|病虫)|检测到|识别到|识别出|检出|'
+    r'(当前|现在|刚才|图里|图中|画面里?)的?(虫|害虫|虫情|结果)')
+
+
+def gate_score(chunks):
+    """拒答闸门判据：召回片段里最高的 gate_score（见 Retriever.search 的口径说明）。
+
+    取 max 而不是 chunks[0]：排序用的是加权分，第一条不一定是闸门分最高的那条。
+    """
+    if not chunks:
+        return 0.0
+    return max(float(c.get('gate_score', c.get('raw_score', c['score']))) for c in chunks)
+
+
 # 全局单例（惰性构建：import 时不建，避免拖慢服务启动）
 _RETRIEVER = None
+_retriever_lock = threading.Lock()
 
 
 def get_retriever(**kwargs):
+    """拿全局单例。加锁防"启动后前几个并发请求各建一份 TF-IDF"。"""
     global _RETRIEVER
     if _RETRIEVER is None:
-        _RETRIEVER = Retriever(**kwargs)
-        print(f'[RAG] 检索器就绪 {_RETRIEVER.stats()}', flush=True)
+        with _retriever_lock:
+            if _RETRIEVER is None:
+                _RETRIEVER = Retriever(**kwargs)
+                print(f'[RAG] 检索器就绪 {_RETRIEVER.stats()}', flush=True)
     return _RETRIEVER
 
 

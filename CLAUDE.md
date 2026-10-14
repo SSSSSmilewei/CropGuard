@@ -48,17 +48,25 @@
 - AI 网关: llm/ai_gateway.py（**唯一 AI 出入口**：RAG 检索 → 接地提示词 → Ollama → 后校验）
 - 检索/防幻觉: llm/retriever.py（TF-IDF 字符 n-gram）、llm/kb_chunks.py、llm/guard.py
 - 接地提示词: prompts/templates/grounded_expert.txt（取代旧 1500 字"报告型"模板）
-- 手机端页面: serve/mobile.py（`GET /m`）；二维码: tool/qr_min.py；证书: tool/gen_cert.py
+- 网页前端: web/（Vue 3 + Vite + TS，2026-10-14 重写）；**构建产物 web/dist 随仓库提交**（现场无 Node）；
+  serve/spa.py 托管，路由 `/ /stream /ask /spray /system /m`；改前端后 `cd web && npm run build`
+  - 视觉：浅灰绿"标本衬板"底 + 田野深绿操作色 + 稻穗金检测框；数字 Barlow Condensed、数据 IBM Plex Mono（随包打包），中文用系统字体
+  - 设计稿（Claude Design 画布）：https://claude.ai/artifact/28a1ZbzuS39Ym3yTaMpTdj
+  - 旧页面 serve/pages|templates|static、serve/mobile.py、serve/pages.py 已于 2026-10-14 删除（被 web/ 取代）
+- 二维码: tool/qr_min.py；证书: tool/gen_cert.py
 - 信号反馈: feedback/feedback.py（播报语义）+ feedback/tts.py（**专用线程 + 多后端真校验**）
 - 喷淋控制: feedback/spray.py（serial/http/mqtt + stop）
 - 硬件固件: ESP32/（PlatformIO 工程，8 个 env，见 ESP32/README.md）
 - 测试: tests/run_tests.py（内置迷你框架，零依赖；`python tests/run_tests.py`）
 - RAG 评测: scripts/ask_eval.py（库内召回 / 库外拒答 / 越权指令拦截）
+- 数据看板: `/dashboard` + scripts/build_dashboard.py（验证集逐类 mAP、20 张实拍、训练曲线、RAG、单测 → output/dashboard/snapshot.json）；
+  数据集 data.yaml 里的 path 是训练机绝对路径，脚本会自动换成 data.yaml 所在目录
 
 ## 启动方式
 - GUI: 运行 main.py（PyCharm 或 `python main.py`）
 - Web + 手机端: `python api_server.py`（PC 首页 + `/m` 手机页 + REST/WS）；
-  手机"实时模式"再加 `--https`（HTTPS 8443，自签证书自动生成）
+  默认就同时监听 HTTPS 8443（自签证书自动生成），手机入口打印 https 地址；
+  只跑 HTTP 加 `--no-https`
 - 训练: `python train_640.py`（新建）或 `python train_640.py --resume`（续训）
 - 喷淋联调: `python api_server.py`（**唯一**接 SprayController 的入口；GUI 只做语音+串口反馈）
 - 测试: `python tests/run_tests.py`；RAG 评测: `python scripts/ask_eval.py`（`--llm` 才真调大模型）
@@ -73,9 +81,9 @@
 | 用户自由提问 | `llm/ai_gateway.answer` → `POST /api/ask` + GUI 聊天（`ChatWorker`） | GUI 与网页同一答案；`/api/kb/search` 可现场展示召回 |
 | 防幻觉 | 召回闸门(`CHAT.refuse_below`=0.18，低于阈值**不调模型**) + 接地提示词 + `temperature=0.2`/固定 seed + `llm/guard.py` 后校验 | 库外问题直接拒答；编造药名/剂量被标注"请核实" |
 | RAG（原待定项→已做） | `llm/kb_chunks.py` + `llm/retriever.py` + `scripts/ask_eval.py` | 110 片段 / 27 类 / 61 别名；评测：库内召回 20/20、库外拒答 10/10、越权拦截 4/4 |
-| 手机实时+拍照 | `serve/mobile.py`（`/m`）+ `WS /ws/phone` | 二进制帧上传实测 0.15s 回检测 JSON；拍照档纯 HTTP 可用（`capture` 不需要 HTTPS） |
+| 手机实时+拍照 | `web/src/views/MobileView.vue`（`/m`）+ `WS /ws/phone` | 二进制帧上传实测 0.15s 回检测 JSON；拍照档纯 HTTP 可用（`capture` 不需要 HTTPS） |
 | 手机提问 → 控制喷洒 | `POST /api/ask_command`（**只解析**）→ 人工确认 → `/api/spray` | 危险词拦截、"100 秒"钳到 5 秒、未指定片区拒绝；大模型绝不直接驱动硬件 |
-| 测试 | `tests/`（迷你框架）+ `scripts/ask_eval.py` | 60 用例全绿（约 38 秒）；ask_eval 三项 100% |
+| 测试 | `tests/`（迷你框架）+ `scripts/ask_eval.py` | 150 passed / 3 skipped（2026-10-14，含喷淋/QR/闸门/GUI 竞态新用例）；ask_eval 三项 100%（TF-IDF 与关键词退化两条路径都过） |
 
 ### 这一批踩过的坑（下次别重踩）
 1. `python tests/run_tests.py` 时 runner 是 `__main__`，测试里 `from run_tests import ...` 是**另一个模块实例**
@@ -84,7 +92,8 @@
    也不要用长路径 + `cv2.VideoWriter`（Windows 报 `CAP_IMAGES: can't find starting number`）→ 用工作区内短路径 + 图片序列；
 3. 手写 QR 时**定时图案要最先放**（否则定位图案的分隔符会覆盖第 8 个模块），
    且**填充与掩码必须共用同一张"功能区"表**（分开判定会把格式信息区当数据取反，扫码器读不出）；
-   本机 OpenCV 的 `QRCodeDetector` **本身失效**（连它自己 `QRCodeEncoder` 生成的码都解不出），别用它做验证；
+   ⚠️ 2026-10-14 更正：`tool/qr_min.py` 本身有 3 个 bug（格式信息写成转置、功能区表多占两格、v6~v9 分块表错），
+   **所有版本都扫不出**；已修，`tests/test_qr.py` 用 OpenCV 解码 v1~v10 验证（Linux 上 OpenCV 解码器正常）；
 4. `openssl.exe` 必须带 `-config`（本机是 `<conda根>\Library\ssl\openssl.cnf`），
    且 `-config` 要放在 `req` 子命令**后面**；`New-SelfSignedCertificate` 这条路在本机被策略拒绝；
 5. 本机 `SAPI.SPVoice`（win32com / pyttsx3 都走它）建对象成功但 `Speak` 报 COM 错 →
@@ -184,3 +193,19 @@ BLE 走 **服务器 → 节点**（Python `bleak`），**不做手机直连节�
 - hsv_s 最大 1.0，不能超过
 - 更换模型后记得改 config/configs.yaml 的 WEIGHT，否则 GUI 会加载旧模型
 - generate_ppt.py 曾误删，需从原完整包恢复（原包非GitHub，是CSDN/博客下载，含UI.py+weights+icon）
+
+## 2026-10-14 前端重写 + bug 修复（测试 156 passed）
+已修（属 bug，已改）：
+- 喷淋"假成功"：以前手动喷淋丢给后台线程就报成功、`available` 只看有没有配地址 →
+  现在 `/api/spray`、`/api/spray/stop`、聊天指令执行都**同步等节点应答**，失败带 `reason`；`/api/spray/status` 带各节点 `/status` 探活结果
+- 节点 HTTP 走了系统代理：`requests` 默认读 Windows 系统代理（本机代理已失效）→ `feedback/spray.py` 用 `trust_env=False` 的会话
+- 实时流风险闪烁：推流 15fps / 推理 5fps，两次推理之间的帧以前一律发"无风险" → 改为带最近一次结果
+- 实时流改推**原始帧** + `image_size`，检测框由前端叠加（与检测台同一套金色框）
+- 问答上下文串台：`_last_result` 以前每次推理都覆盖（相机泵、手机帧）→ 只记用户主动提交的 `/api/detect` 样本
+- ⚠️ 害虫中文名（configs.yaml chinese_name / knowledge_base / kb_chunks 别名）**已备案，不要改**；2026-10-14 曾误改，已原样还原
+
+待用户定口径（未改，属设计/新功能）：
+1. 风险判定把"拍得近"当"虫害重"：`assess_risk` 面积>10% 即高风险，20 张比赛图**全部**判高风险
+2. 自动喷淋单帧触发 + 3 秒节流（无多帧确认、无冷却）
+3. `/ws/phone` 手机实时识别直接自动喷淋，与"方案二：手机确认后喷"相反，且按 risk_map 喷 all
+4. 联动记录只在内存；5. 控制接口无口令

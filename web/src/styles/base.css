@@ -1,0 +1,232 @@
+/*
+ * 农智云 · 视觉基调
+ * 布局：植保站"标本台"——浅灰绿底板如同标本衬板，检测结果以标本签呈现；
+ *       数字用窄体（仪表读数感），数据用等宽体，中文用系统黑体（离线、不打包中文字体）。
+ * 主色：田野深绿（操作）；稻穗金（检测框、选中）。风险色是语义色，不当主色用。
+ */
+:root {
+  --ground: #ECEEE8;
+  --panel: #F9FAF6;
+  --paper: #FFFFFF;
+  --inset: #E2E6DC;
+  --grid: #D6DBD0;
+  --line: #D2D7CD;
+  --line-strong: #C3C9BE;
+  --ink: #16201A;
+  --ink-2: #4A5850;
+  --ink-3: #626E66;
+  --body-ink: #2E3A33;
+  --brand: #234F38;
+  --brand-hover: #1A3D2B;
+  --brand-ink: #F9FAF6;
+  --brand-soft: #E4ECE4;
+  --signal: #D9A441;
+  --signal-ink: #A87418;
+  --risk-high: #A8321F;
+  --risk-mid: #B25A0C;
+  --risk-low: #5F7327;
+  --risk-none: #8C978F;
+  --warn-bg: #FBF1E6;
+  --warn-line: #E7C9A6;
+  --warn-ink: #8A4308;
+  --danger-bg: #FBEAE7;
+  --stage: #0F1411;
+  --stage-ink: #F2F4EF;
+  --overlay: rgba(15, 20, 17, 0.72);
+  --shadow-lift: 0 1px 0 var(--line-strong), 0 12px 28px rgba(22, 32, 26, 0.16);
+  /* 图表系列色（dataviz 校验通过：相邻色盲 ΔE≥9、正常视觉 ΔE≥22；浅色下 s2/s4 对比度<3:1，图上一律配直接标签） */
+  --s1: #2a78d6;
+  --s2: #1baf7a;
+  --s3: #4a3aa7;
+  --s4: #eda100;
+
+  --font-cn: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+  --font-num: "Barlow Condensed", "Arial Narrow", var(--font-cn);
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --r-sm: 3px;
+  --r: 4px;
+  --r-lg: 6px;
+  --header-h: 64px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0F1310;
+    --panel: #161B17;
+    --paper: #1B211C;
+    --inset: #1E2520;
+    --grid: #252D27;
+    --line: #2A332D;
+    --line-strong: #3A453E;
+    --ink: #E4E9E2;
+    --ink-2: #AEB8B0;
+    --ink-3: #8F9A92;
+    --body-ink: #CDD5CE;
+    --brand: #3E7A56;
+    --brand-hover: #4A8B64;
+    --brand-ink: #F4F7F2;
+    --brand-soft: #1F3327;
+    --signal: #D9A441;
+    --signal-ink: #E0B354;
+    --risk-high: #E5705E;
+    --risk-mid: #E39A4E;
+    --risk-low: #A3BC5C;
+    --risk-none: #6E7A72;
+    --warn-bg: #2B2016;
+    --warn-line: #5C4024;
+    --warn-ink: #F0B87A;
+    --danger-bg: #331A16;
+    --stage: #090C0A;
+    --shadow-lift: 0 1px 0 #000, 0 12px 28px rgba(0, 0, 0, 0.45);
+    --s1: #3987e5;
+    --s2: #199e70;
+    --s3: #9085e9;
+    --s4: #c98500;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0F1310;
+  --panel: #161B17;
+  --paper: #1B211C;
+  --inset: #1E2520;
+  --grid: #252D27;
+  --line: #2A332D;
+  --line-strong: #3A453E;
+  --ink: #E4E9E2;
+  --ink-2: #AEB8B0;
+  --ink-3: #8F9A92;
+  --body-ink: #CDD5CE;
+  --brand: #3E7A56;
+  --brand-hover: #4A8B64;
+  --brand-ink: #F4F7F2;
+  --brand-soft: #1F3327;
+  --signal: #D9A441;
+  --signal-ink: #E0B354;
+  --risk-high: #E5705E;
+  --risk-mid: #E39A4E;
+  --risk-low: #A3BC5C;
+  --risk-none: #6E7A72;
+  --warn-bg: #2B2016;
+  --warn-line: #5C4024;
+  --warn-ink: #F0B87A;
+  --danger-bg: #331A16;
+  --stage: #090C0A;
+  --shadow-lift: 0 1px 0 #000, 0 12px 28px rgba(0, 0, 0, 0.45);
+  --s1: #3987e5;
+  --s2: #199e70;
+  --s3: #9085e9;
+  --s4: #c98500;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font: 14px/1.6 var(--font-cn);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+button, input, select, textarea { font: inherit; color: inherit; }
+h1, h2, h3, p, ul, figure { margin: 0; }
+h2 { font-size: 15px; font-weight: 700; text-wrap: balance; }
+a { color: var(--brand); }
+
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+
+.num { font-family: var(--font-num); font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.latin { font-family: var(--font-mono); font-style: italic; }
+.muted { color: var(--ink-3); }
+.eyebrow { font-size: 12px; letter-spacing: 0.08em; color: var(--ink-3); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* ---------- 面板 ---------- */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  min-width: 0;
+}
+.panel-pad { padding: 18px 20px 20px; }
+.panel-head {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  margin-bottom: 14px;
+}
+.panel-head .aside { margin-left: auto; font-size: 12px; color: var(--ink-3); }
+
+/* ---------- 按钮 ---------- */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 40px; padding: 0 16px; border-radius: var(--r);
+  border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink);
+  font-size: 13px; cursor: pointer; white-space: nowrap;
+  transition: background-color .15s, border-color .15s, color .15s;
+}
+.btn:hover { background: var(--inset); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 500; }
+.btn-primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+.btn-outline-brand { border-color: var(--brand); color: var(--brand); font-weight: 700; }
+.btn-danger { background: var(--risk-high); border-color: var(--risk-high); color: #fff; font-weight: 700; }
+.btn-danger:hover { filter: brightness(1.08); background: var(--risk-high); }
+.btn-danger-outline { border: 2px solid var(--risk-high); color: var(--risk-high); font-weight: 700; background: var(--panel); }
+.btn-danger-outline:hover { background: var(--danger-bg); }
+.btn-sm { min-height: 32px; padding: 0 12px; font-size: 12px; }
+.btn-lg { min-height: 48px; font-size: 15px; font-weight: 700; }
+.btn-block { width: 100%; }
+
+.chip {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 12px;
+  border-radius: 16px; border: 1px solid var(--line-strong); background: var(--panel);
+  color: var(--ink); font-size: 13px; cursor: pointer;
+}
+.chip:hover { border-color: var(--brand); color: var(--brand); }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px;
+  border-radius: var(--r-sm); border: 1px solid var(--line-strong);
+  font-size: 12px; color: var(--ink-2); white-space: nowrap;
+}
+.tag-fill { background: var(--inset); border-color: transparent; color: var(--ink); }
+.tag-warn { border-color: var(--warn-line); color: var(--warn-ink); }
+.tag-brand { background: var(--brand-soft); border-color: transparent; color: var(--brand); }
+:root[data-theme="dark"] .tag-brand { color: var(--ink); }
+
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--risk-none); flex: none; }
+.dot.ok { background: var(--risk-low); }
+.dot.warn { background: var(--risk-mid); }
+.dot.bad { background: var(--risk-high); }
+
+.input {
+  min-width: 0; min-height: 44px; padding: 0 14px; border-radius: var(--r);
+  border: 1px solid var(--line-strong); background: var(--paper); color: var(--ink);
+}
+.input::placeholder { color: var(--ink-3); }
+
+.notice {
+  padding: 10px 12px; border-radius: var(--r); font-size: 13px;
+  background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--ink);
+}
+.notice .sub { font-size: 12px; color: var(--warn-ink); }
+
+.empty { color: var(--ink-3); font-size: 13px; padding: 12px 0; }
+
+/* 风险色：文字用 */
+.risk-high { color: var(--risk-high); }
+.risk-mid { color: var(--risk-mid); }
+.risk-low { color: var(--risk-low); }
+.risk-none { color: var(--ink-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

@@ -50,3 +50,6 @@ Thumbs.db
 
 # --- 独立发布的子仓库（内含自己的 .git，别当成本仓库的文件）---
 _dist/
+
+# --- 前端源码依赖（构建产物 web/dist 要提交，node_modules 不提交）---
+web/node_modules/

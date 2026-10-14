@@ -57,7 +57,7 @@ UI:
     # 表头背景
     header_background_color: "48,77,49"
     # 表头字体
-    header_color: "112,63,46"
+    header_color: "255,255,255"
     # 表格背景
     background_color: "197,190,172"
     # 滑过背景
@@ -438,7 +438,8 @@ RAG:
 # ==================== 手机端 ====================
 PHONE:
   # HTTPS 端口（getUserMedia 取手机摄像头必须是安全上下文）
-  # 用 --https 启动时 HTTP(8080) 与 HTTPS(8443) 会同时监听
+  # 默认启动即同时监听 HTTP(8080) 与 HTTPS(8443)；启动时打印的手机入口为 https。
+  # 想只跑 HTTP：python api_server.py --no-https
   https_port: 8443
   cert_dir: './config/certs'
   # 手机实时模式：每隔多久抓一帧上传（毫秒）；越小越流畅、越吃带宽

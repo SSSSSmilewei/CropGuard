@@ -3,8 +3,8 @@
 > 基于 **YOLOv8s** 的 27 类农作物害虫检测系统，配套 PyQt5 桌面 GUI、手机端网页、离线大模型（RAG + 防幻觉）问答与喷洒联动。
 > 项目曾获 **2026 睿抗机器人开发者大赛（CAIR 赛道）省赛一等奖**，晋级国赛。
 
-> 🆕 **第一次接手这个项目？先看 [新手使用指南.md](新手使用指南.md)** —— 从装环境到手机连上去，一步步照着敲。
-> 🖱️ **不想用命令行？看 [PyCharm运行指南.md](PyCharm运行指南.md)** —— 项目已内置 6 个一键运行配置，点鼠标就行。
+> **第一次跑这个项目？直接看下面第 2 节**，照着做就能跑起来。
+> 更细的分步说明见 [新手使用指南.md](新手使用指南.md)；习惯用 PyCharm 的看 [PyCharm运行指南.md](PyCharm运行指南.md)。
 
 
 ---
@@ -14,71 +14,116 @@
 系统对农作物实拍图像/视频/摄像头画面（含**手机摄像头**）进行害虫目标检测，识别 27 类常见农作物害虫，
 并根据检测结果自动生成防治建议、语音播报、按片区联动喷洒。核心能力：
 
-- **多源检测**：图片、目录批处理、视频逐帧、USB 工业相机实时流、手机摄像头实时上传
-- **相机共享 + 自愈**：GUI/网页/手机共用同一路采集（`tool/camera_source.py`），断流自动重开，多个客户端同时看不再互相抢设备
-- **AI 问答（RAG + 防幻觉）**：本地 Ollama `qwen2.5:7b` + 内置知识库检索，**知识库没覆盖就明确拒答**，回答带"依据"条目
-- **语音反馈**：离线 TTS（多后端自动兜底），**每次检测都会播报**（不是只响第一次），文案与真实动作一致
-- **喷洒联动**：风险 → 片区喷洒 + 语音；自然语言指令需**人工确认**后才执行（大模型不直接驱动硬件）
-- **手机端一页搞定**：拍照识别（HTTP 可用）、实时识别（HTTPS）、提问大模型、远程喷洒、历史回看
-- **可配置**：模型、设备、UI、AI、相机、语音、RAG、手机端均通过 `config/configs.yaml` 配置
+- **多源检测**：图片（可一次批量、自动计时）、视频逐帧、USB 工业相机实时流、手机摄像头实时上传
+- **相机共享 + 自愈**：GUI/网页/手机共用同一路采集（`tool/camera_source.py`），断流自动重开
+- **AI 问答（RAG + 防幻觉）**：本地 Ollama `qwen2.5:7b` + 内置知识库检索，**知识库没覆盖就明确拒答**，回答带出处
+- **语音反馈**：离线 TTS（多后端自动兜底），文案与真实动作一致
+- **喷洒联动**：风险 → 片区喷洒 + 语音；节点在线状态实时探测，**只在节点真的应答后才提示"已下发"**；
+  自然语言指令需**人工确认**后才执行（大模型不直接驱动硬件）
+- **网页 + 手机端**：检测台、实时监测、农技问答、喷淋控制、数据看板；手机扫码即用
+- **可配置**：模型、设备、相机、语音、RAG、喷淋、手机端均通过 `config/configs.yaml` 配置
 
 ---
 
-## 2. 快速开始
+## 2. 快速开始（给队友：照这一节做就能跑）
 
-### 2.1 环境要求
+### 2.1 拿到代码
+
+```bash
+git clone https://github.com/SSSSSmilewei/CropGuard.git
+cd CropGuard
+```
+
+仓库里**有**：全部代码、模型权重（`runs/train/pest27_final4/weights/best.pt` 和 `best.onnx`）、已经打包好的网页（`web/dist/`）。
+仓库里**没有**：数据集 `dataset_full/`、20 张比赛图 `pictures20/`、比赛 PPT（体积大或不公开，找我拷）。
+**只运行系统不需要它们**；只有重新训练、生成数据看板时才用得到。
+
+### 2.2 装环境（只做一次）
 
 | 项目 | 要求 |
 | ---- | ---- |
-| 操作系统 | Windows 10/11（推荐），Ubuntu 20.04+ 也可运行 |
-| Python | **3.8 ~ 3.11**（推荐 3.10） |
-| GPU | 可选。有 NVIDIA 显卡则推理更快；无 GPU 也能用 CPU 运行 |
-
-> 注意：项目依赖 `torch==2.0.1`，不支持 Python 3.12 及以上，请务必用 3.8~3.11。
-
-### 2.2 安装依赖
+| 操作系统 | Windows 10/11（推荐），Ubuntu 20.04+ 也可以 |
+| Python | **3.10**（推荐）。`requirements.txt` 锁定了 `torch==2.0.1`，只支持 Python 3.8 ~ 3.11 |
+| 显卡 | 可选。有 NVIDIA 显卡推理更快；没有也能用 CPU 跑，20 张图几秒钟 |
 
 ```bash
-# 1) 创建并激活虚拟环境（Windows）
 python -m venv .venv
-.venv\Scripts\activate
-
-# 2) 安装依赖（CPU 版 PyTorch，开箱即用）
+.venv\Scripts\activate                 # Linux/macOS：source .venv/bin/activate
 pip install -r requirements.txt
-# 只跑服务器（不用 GUI）时用更精简的清单：
-pip install -r requirements-server.txt
 ```
 
-> **有 NVIDIA 显卡想用 GPU 推理**：先按上面装完，再用 CUDA 版 torch 覆盖（以 CUDA 11.8 为例）：
-> ```bash
-> pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
-> ```
-> 然后确认 `nvidia-smi` 能看到显卡。
+- **国内网络下载慢或报 SSL 错误**：加清华镜像 `pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple`；
+  如果报 `ProxyError`，说明系统代理失效了，先关掉代理软件或设置环境变量 `NO_PROXY=*` 再装。
+- **想用显卡**：装完后再覆盖一个 CUDA 版 torch（例：`pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118`），
+  `nvidia-smi` 能看到显卡即可。
+- **没有显卡不用改配置**：配置里写的是 `cuda:0`，程序发现没有可用显卡会自动改用 CPU（日志打印"CUDA 不可用，自动回退到 CPU"）。
 
-### 2.3 修改设备（无显卡必须做）
+### 2.3 跑起来
 
-打开 `config/configs.yaml`，把 `MODEL.DEVICE` 从 `'cuda:0'` 改成 `'cpu'`。
-
-### 2.4 启动方式
+两种用法，**现场演示推荐第一种**：
 
 ```bash
-python main.py                      # 桌面 GUI（检测 + 语音 + 大模型问答）
-python api_server.py                # Web 服务（PC 首页 + 手机端 /m + REST/WS）
-python api_server.py --https        # 额外开 HTTPS 8443（手机"实时模式"必须用它）
+python api_server.py      # ① 网页 + 手机端（同时开 HTTP 8080 和 HTTPS 8443）
+python main.py            # ② 桌面 GUI（PyQt5 窗口）
 ```
 
-启动后终端会直接打印**手机入口地址**，例如：
+> ⚠️ ① 和 ② **不要同时开**：Windows 下一个 USB 相机只能被一个程序占用。
 
+**① 网页版启动后**，电脑浏览器打开 <http://127.0.0.1:8080/>，顶部导航有这几页：
+
+| 页面 | 地址 | 用来干什么 |
+| ---- | ---- | ---- |
+| 检测台 | `/` | 拖入或粘贴图片识别；一次可以放多张，按顺序识别并计时（对应"20 张 / 180 秒"） |
+| 实时监测 | `/stream` | 服务器相机实时画面 + 检测框 + 近 60 秒风险时间线 + 手动喷淋 |
+| 农技问答 | `/ask` | 提问防治方法；右侧"检索透视"显示为什么回答、为什么拒答 |
+| 喷淋控制 | `/spray` | 各片区节点在线状态、手动喷淋（按住 1 秒下发）、一句话指令、联动记录 |
+| 数据看板 | `/dashboard` | mAP、训练曲线、逐类精度、20 张实拍样本实测、自检结果 |
+| 设备与接入 | `/system` | **手机扫码入口**、相机、模型、语音状态 |
+
+**手机怎么连**：手机和电脑连同一个 WiFi（或电脑连手机热点），打开"设备与接入"页扫二维码，
+或者手输终端里打印的 `手机会话页: https://<电脑IP>:8443/m`。
+第一次打开会提示"证书不受信任"，点"继续访问"即可（自签证书，正常现象）。
+手机端底部有 识别 / 问答 / 喷洒 / 记录 四个标签；识别页顶部可以在**拍照识别**和**实时识别**之间切换
+（实时识别必须用 https 地址打开，拍照识别 http 也行）。
+
+### 2.4 可选：这些不装也能跑
+
+| 组件 | 不装会怎样 | 要用时怎么做 |
+| ---- | ---- | ---- |
+| 本地大模型 Ollama | 问答照常能用，直接给知识库原文 | 安装 Ollama → `ollama pull qwen2.5:7b` → `ollama serve` |
+| 喷洒节点（ESP32） | 喷淋页显示节点离线，下发会提示"未送达" | 节点上电后把串口打印的 IP 填进 `config/configs.yaml` 的 `SPRAY.http_targets`；固件见 `ESP32/README.md` |
+| USB 相机 | 实时监测页提示打不开相机，其他功能不受影响 | `python tool/camera_probe.py` 查看有哪些相机，改 `CONFIG.camera_device` |
+| 数据看板快照 | 看板页提示"还没有生成快照" | 见下面 2.5 |
+
+### 2.5 数据看板（需要数据集，生成一次即可）
+
+看板上的数字都是用真实数据跑出来的，需要数据集和比赛图：
+
+```bash
+python scripts/build_dashboard.py --data dataset_full/data.yaml --samples pictures20
 ```
-手机会话页: http://10.30.129.219:8080/m
-手机监测页: http://10.30.129.219:8080/stream
+
+CPU 上大约 8 分钟（主要是跑 2046 张验证集），结果写到 `output/dashboard/`。只想更新样本测试、不重跑验证集，加 `--skip-val`。
+
+### 2.6 怎么确认装好了
+
+```bash
+python tests/run_tests.py      # 单元测试，应显示 156 passed, 0 failed
+python scripts/ask_eval.py     # 问答评测：库内召回 / 库外拒答 / 越权拦截，三项应都是 100%
 ```
 
-PC 浏览器打开 `http://127.0.0.1:8080/` 首页，页面下方会显示手机入口的**二维码（手写实现，无额外依赖）**，
-手机扫码即可进入 `/m`，不用手输 IP。
+### 2.7 常见问题
 
-> 模型权重已内置在 `runs/train/pest27_final4/weights/best.pt`，**无需下载任何模型**。
-> ⚠️ GUI 与服务器**不要同时打开同一个 USB 相机**（Windows 下设备独占）；现场演示只开一个，推荐开服务器。
+| 现象 | 处理 |
+| ---- | ---- |
+| 打开网页显示"前端页面还没有构建" | 代码没拉全，`web/dist/` 缺失；重新 `git pull`，或在 `web/` 下 `npm install && npm run build` |
+| 启动报端口被占用 | 之前的服务没关；关掉旧窗口，或换端口 `python api_server.py --port 8090` |
+| 手机打不开页面 | 确认手机和电脑在同一网络；Windows 防火墙放行 Python 的 8080 / 8443 端口 |
+| 手机实时识别打不开摄像头 | 必须用 `https://…:8443/m` 打开；浏览器设置里允许本页使用相机；实在不行用拍照识别 |
+| `ModuleNotFoundError` | 没在虚拟环境里运行；先 `.venv\Scripts\activate` 再启动 |
+
+> 网页源码在 `web/`（Vue 3 + Vite + TypeScript），`web/dist/` 已随仓库提交，运行**不需要 Node**。
+> 只有改了网页源码才需要 Node 18+：`cd web && npm install && npm run build`。
 
 ---
 
@@ -90,8 +135,8 @@ PC 浏览器打开 `http://127.0.0.1:8080/` 首页，页面下方会显示手机
 # 1) 拉起本地大模型（缺了不影响检测，但问答会降级为知识库原文）
 ollama serve
 
-# 2) 起服务（要用手机实时模式就加 --https）
-python api_server.py --https
+# 2) 起服务（默认就带 HTTPS 8443，手机实时模式开箱可用）
+python api_server.py
 ```
 
 看日志里的四行关键信息，缺谁补谁：
@@ -100,7 +145,7 @@ python api_server.py --https
 [INFO] 相机 ... backend=dshow size=1280x720      # 相机通了
 [TTS] 后端就绪 engine=...                        # 语音通了
 [INFO] Spray transport=http available=True       # 喷洒链路通了
-手机会话页: http://<本机IP>:8080/m                # 手机地址
+手机会话页: https://<本机IP>:8443/m               # 手机地址
 ```
 
 ### 3.2 三张处置卡
@@ -113,16 +158,16 @@ python api_server.py --https
 
 ### 3.3 演示动线（建议 3 分钟）
 
-1. PC 首页上传一张样本图 → 显示检测框 + 风险 + 知识库建议；
+1. 电脑打开检测台，拖入一张样本图 → 检测框 + 风险 + 标本签 + 防治建议；
 2. 手机扫码进 `/m` → 拍照识别 → 结果回到手机；
-3. 手机点"实时模式"（HTTPS）→ 手机画面实时上传识别；
+3. 手机识别页切到"实时识别"（HTTPS）→ 手机画面实时上传识别；
 4. 手机提问"蚜虫怎么防治"→ 回答带"依据"；再问"今天天气怎么样"→ **明确拒答**（这就是防幻觉的证据）；
 5. 手机输入"给 A 片区喷 3 秒"→ 解析 → 点确认 → 继电器动作 + 语音播报"已给片区A喷淋3秒"。
 
 ### 3.4 先跑一遍自检（强烈建议）
 
 ```bash
-python tests/run_tests.py     # 60 个用例：检索/防幻觉/指令安全/语音队列/相机采集
+python tests/run_tests.py     # 156 个用例：检索/防幻觉/指令安全/语音队列/相机采集
 python scripts/ask_eval.py    # RAG 评测：库内召回率、库外拒答率、越权拦截率
 ```
 
@@ -132,16 +177,22 @@ python scripts/ask_eval.py    # RAG 评测：库内召回率、库外拒答率�
 
 | 接口 | 说明 |
 | ---- | ---- |
-| `GET /` | PC 演示页（上传检测 + 建议 + 手机入口二维码） |
-| `GET /m` | **手机端主页**：拍照识别 / 实时识别 / 提问 / 喷洒 / 历史 |
-| `GET /stream` | 手机监测页（旧版，保留兼容） |
+| `GET /` | 检测台：批量样本识别 + 计时（20 张 / 180 秒）+ 风险 + 标本签 + 防治建议 |
+| `GET /stream` | 实时监测：服务器相机画面 + 风险时间线 + 手动喷淋 |
+| `GET /ask` | 农技问答：对话 + 检索透视（闸门分、召回片段） |
+| `GET /spray` | 喷淋控制：节点在线状态 + 手动喷淋 + 一句话指令 + 联动记录 |
+| `GET /system` | 设备与接入：手机二维码、相机、模型、语音状态 |
+| `GET /dashboard` | 数据看板：验证集 mAP、训练曲线、逐类 mAP、20 张实拍样本、问答评测、联动预案、实时状态 |
+| `GET /m` | **手机端**：拍照识别 / 实时识别 / 提问 / 喷洒 / 记录 |
+| `GET /api/client_config` | 前端运行参数（端口、帧间隔、喷淋上限、联动预案等） |
+| `GET /api/spray/status` | 喷淋链路 + **各节点在线状态**（GET 节点 /status 探活，3 秒缓存） |
 | `POST /api/detect` | 上传图片检测（multipart）→ 带框结果图 + 风险 + 知识库建议 |
 | `WS /ws/stream` | 服务器相机实时流（共享采集源，多客户端可同时看） |
 | `WS /ws/phone` | **手机上传二进制 JPEG 帧 → 回检测 JSON**（不回图，省流量） |
 | `POST /api/ask` | 自由问答（RAG + 防幻觉）：返回 `answer` / `citations` / `guard` |
 | `GET /api/kb/search?q=` | 只做检索：现场展示召回片段与分数 |
 | `POST /api/ask_command` | 自然语言 → 喷洒意图（**默认只解析，需人工确认**） |
-| `POST /api/spray` | 手动喷洒（`{"group":"g1","duration":3,"via":"phone"}`） |
+| `POST /api/spray` | 手动喷洒（`{"group":"g1","duration":3,"via":"phone"}`）；等节点应答，`success` 只在真正送达时为 true，失败给 `reason` |
 | `GET /api/camera/health` | 相机状态 / 帧龄 / 自愈次数 / 实测 fps |
 | `POST /api/camera/restart` | 强制重开相机（现场抢救） |
 | `GET /api/feedback/status` | 语音与串口状态（排查"到底响不响"） |
@@ -181,8 +232,9 @@ yolov8/
 ├─ config/
 │  ├─ configs.yaml           # 主配置（模型/设备/UI/AI/相机/语音/RAG/手机端）
 │  └─ certs/                 # HTTPS 自签证书（--https 首次运行自动生成）
+├─ web/                      # 网页前端源码（Vue 3 + Vite + TS）；dist/ 为构建产物，随仓库提交
 ├─ serve/
-│  └─ mobile.py              # 手机端页面（/m）HTML
+│  └─ spa.py                 # 托管 web/dist（/ /stream /ask /spray /system /m 都返回同一个入口页）
 ├─ tool/
 │  ├─ camera_source.py       # ★ 共享相机采集 + 看门狗自愈（GUI/服务器/手机共用）
 │  ├─ camera_probe.py        # 摄像头索引探针（现场排查用）
@@ -229,7 +281,7 @@ yolov8/
 | `SPRAY.max_duration` | `5` | 单次喷洒上限（雾化片怕连烧，固件再钳一次，默认 5 秒） |
 | `CHAT.refuse_below` | `0.18` | 检索分数低于此值**拒绝生成**（防幻觉硬闸门） |
 | `RAG.retriever` / `top_k` | `'tfidf'` / `4` | 召回实现与条数（预留 `embedding` 升级位） |
-| `PHONE.https_port` | `8443` | `--https` 时 HTTPS 端口，与 8080 同时监听 |
+| `PHONE.https_port` | `8443` | HTTPS 端口（默认与 8080 同时监听；`--no-https` 可关闭） |
 
 ---
 
@@ -299,7 +351,7 @@ python train_640.py --resume  # 断点续训（从 pest27_final4 的 last.pt）
 | 画面"跑一会就卡死" | 已由 `tool/camera_source.py` 的看门狗处理；仍卡就 `POST /api/camera/restart`，并看 `/api/camera/health` |
 | 多个手机同时看实时流报"打不开相机" | 已修：`/ws/stream` 改为共享采集源；若日志仍报设备忙，说明是别的程序占着相机 |
 | 语音只响第一次 | 已修（`feedback/tts.py` 专用线程 + COM 修复）。若日志显示 `无可用语音后端`，看 `/api/feedback/status` 的 `init_errors` |
-| 手机实时模式打不开摄像头 | 必须 HTTPS（`--https`，用 `https://<IP>:8443/m`）并信任自签证书；否则用拍照模式 |
+| 手机实时模式打不开摄像头 | 必须 HTTPS（用启动日志打印的 `https://<IP>:8443/m`，默认已开启）并信任自签证书；否则用拍照模式 |
 | 手机打不开页面 | 手机与服务器需在同一 WiFi/热点网段；用启动日志打印的那个 IP |
 | 大模型回答"知识库未涵盖" | 这是**设计行为**（防幻觉）：该问题超出 27 类害虫知识库，可扩充 `llm/knowledge_base.py` 后重试 |
 | 问答很慢 | 7B 在 6GB 显存上单次约 4~10 秒；可换 `qwen2.5:3b`（改 `llm/local_llm.py` 的 `MODEL_NAME`） |
