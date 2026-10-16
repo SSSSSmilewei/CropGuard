@@ -190,6 +190,30 @@ def test_detection_state_text():
     assert '未检测到' in ee._state_text_of_detections([], {'level': '无风险'})
 
 
+# ==================== 决策点目录（选择题定位） ====================
+@test_case
+def test_decision_points_catalog_is_choice_based():
+    """决策点目录：每题必须是 choice/score/noul + 固定 options；规划项必须写明前置条件。"""
+    pts = {p['id']: p for p in ee.decision_points()}
+    assert {'command', 'detection', 'qa_routing', 'report_triage'} <= set(pts), pts.keys()
+
+    for pid, p in pts.items():
+        assert p['name'] and p['state_hint'] and p['used_by'], pid
+        assert p['status'] in ('active', 'experimental', 'planned'), pid
+        assert p['questions'], pid
+        for qid, q in p['questions'].items():
+            assert q['type'] in ('choice', 'score', 'noul'), (pid, qid)
+            assert q.get('instructions'), (pid, qid)
+            if q['type'] in ('choice', 'score'):
+                assert q.get('criteria'), (pid, qid)   # 选择题必须有固定选项集
+        if p['status'] == 'planned':
+            assert p.get('prerequisites'), '%s 是规划项，必须写明前置条件' % pid
+
+    # 已接入/实验性的两个决策点要有真实消费方
+    assert '/api/ask_command' in pts['command']['used_by']
+    assert '/api/edge/advise' in pts['detection']['used_by']
+
+
 # ==================== 真模型冒烟（无模型时 SKIP） ====================
 @test_case
 def test_live_engine_official_routing_example():

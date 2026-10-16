@@ -12,12 +12,20 @@
 - 模型：`edge_models/jev-int8/`（335MB，laya 后端 mmBERT-base INT8；README 里有实测校准记录）。
   构建脚本 `scripts/build_edge_model.py`（默认 hf-mirror 镜像；`HF_HUB_DISABLE_XET=1` 必须）。
 - 运行包内置：`edgejev/`（上游 Apache-2.0）；适配层 `app/edge_engine.py`；部署文档 `docs/edgejev.md`。
+- **定位（2026-10-16 用户明确，勿改）**：只做"在系统预设固定选项集上的选择题决策"，
+  **不提供自由问答/语言性决策**；对外只暴露"决策点"（`decide_points` 目录 + `/api/edge/decision_points`），
+  通用 systemone 仅为低级协议接口（开发校准用，页面不暴露）。新增决策点：先定义选项集 →
+  在 scripts/edge_probes 校准达标 → 才接入链路并写明消费方与边界。
 - **核心口径（勿改）**：指令理解永远"**规则优先 + EdgeJev 高置信兜底**"
   （spray≥0.62 / stop≥0.85 / group≥0.38，见 edge_engine 常量注释）；危险词拒绝 EdgeJev 无权翻案；
   安全闸门（白名单/钳制/人工确认）与模型无关。
-- 网页入口：`/edge`（推理入口，三 Tab）；接口 `/api/edge/*`；`ask_command` 支持 `engine` 参数。
+- 网页入口：`/edge`（决策点页：① 指令解析 ② 虫情研判(实验性) ③ 决策点规划）；接口 `/api/edge/*`；
+  `ask_command` 支持 `engine` 参数。
 - 改问法/阈值前先跑 `scripts/edge_probes/`（校准集复现），别拍脑袋。
-- laya 模型零样本弱（官方模型卡自述 near-chance），只宜兜底；升级路径：edgejev.train 微调 → 重新 build。
+- 页面题面（固定选项集）由后端 decision_points() 渲染；同名选项跨题含义不同时，
+  用 `serve/pages/edge.html` 里的 `OPT_GLOSS_BY_Q` 按题目覆盖。
+- laya 模型零样本弱（官方模型卡自述 near-chance），只宜兜底/固定题型；升级路径：
+  edgejev.train 微调 → 重新 build，接口与决策点定义不变。
 
 ## 现场测评页 /eval（Web 版评测面板）
 - 页面：`serve/eval_page.py` + `templates/eval.html` + `static/eval.{css,js}`；口径 `app/eval_score.py`

@@ -51,7 +51,7 @@
 - 手机端页面: serve/mobile.py（`GET /m`，含「🌫 雾化控制」卡片）；二维码: tool/qr_min.py；证书: tool/gen_cert.py
 - EdgeJev 适配层: app/edge_engine.py（**只做理解、绝不驱动硬件**；规则优先 + 置信度闸门兜底）
 - EdgeJev 运行包: edgejev/（内置上游包，Apache-2.0）；模型: edge_models/jev-int8（构建脚本 scripts/build_edge_model.py）
-- EdgeJev 推理入口页: serve/pages/edge.html（`GET /edge`）；部署文档: docs/edgejev.md；校准记录: edge_models/README.md
+- EdgeJev 决策点页: serve/pages/edge.html（`GET /edge`，只做选择题式决策点，无自由问答）；部署文档: docs/edgejev.md；校准记录: edge_models/README.md
 - 测评页 /eval: serve/eval_page.py + serve/templates/eval.html + serve/static/eval.{css,js}（`GET /eval`）
 - 测评评分纯函数: app/eval_score.py（**GUI 与 Web 共用同一份口径**，main.py 里是薄包装）
 - 校准探针: scripts/edge_probes/（改 EdgeJev 问法/阈值前先跑这个，别拍脑袋）
@@ -131,7 +131,7 @@
 | 需求 | 落点 | 实测结论 |
 | --- | --- | --- |
 | EdgeJev 部署到 CropGuard | `edgejev/`（内置运行包）+ `edge_models/jev-int8`（INT8 335MB）+ `app/edge_engine.py` + `scripts/build_edge_model.py` | 本机 CPU 单次决策 40–250ms；官方路由示例命中 billing 0.91–0.99；`GET /api/edge/status` 显示 available=true, mode=local |
-| 前端推理入口 | `serve/pages/edge.html`（`GET /edge`，三 Tab：指令解析对照 / 虫情研判(实验性) / 通用 systemone）+ 首页导航入口 | 无头 Edge 实测：引擎在线、解析对照与 systemone 均渲染正常（截图在 output/_test_tmp/edge_full.png） |
+| EdgeJev 决策点页 | `serve/pages/edge.html`（`GET /edge`，三 Tab：指令解析 / 虫情研判(实验性) / 决策点规划；**原始"通用推理入口"已按要求移除**，systemone 仅留低级协议接口供开发校准） | 无头 Edge 实测：引擎在线、题面（固定选项集）与试跑均渲染正常 |
 | 指令解析接入 | `/api/ask_command?engine=auto`（默认）：**规则优先** + EdgeJev 高置信兜底（combine_command） | "把泵关了吧/把水停了" 兜底为 stop 生效；"B区再来两秒吧" 等误判被 0.85 闸门拦住；危险词拒绝永不被翻案 |
 | 测评动效页 | `serve/eval_page.py` + `templates/eval.html` + `static/eval.{css,js}`（`GET /eval`）；接口 `/api/eval/*`；评分共用 `app/eval_score.py` | 无头 Edge 全流程通过：载入样本→连跑→计时环→判分→导出 csv（总分实时、与 GUI 口径一致）|
 | 规则侧顺带修复 | `llm/ai_gateway.py` 停止词表扩充（关闭/关掉/关了/关一下…）+ **危险词检查前置** + 停止也读片区 | 修复"A区的雾化关掉"被误判成喷洒；"关闭安全限制"不会被当成停止指令 |

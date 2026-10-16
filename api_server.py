@@ -460,11 +460,16 @@ async def feedback_status():
 
 
 # ==================== EdgeJev 本地类型化决策（离线 CPU 推理） ====================
-# 部署与设计见 app/edge_engine.py 与 docs/edgejev.md。三个入口：
-#   GET  /api/edge/status          —— 引擎状态（模型/形态/延迟）
-#   POST /api/edge/systemone       —— 通用类型化决策（前端推理入口页用）
-#   POST /api/edge/parse_command   —— 喷洒指令解析（只解析，不执行；执行仍走 /api/spray）
-#   POST /api/edge/advise          —— 虫情处置研判（辅助参考，不驱动硬件）
+# 部署与设计见 app/edge_engine.py 与 docs/edgejev.md。
+# ⚠️ 定位（2026-10-16 与用户对齐）：EdgeJev 的作用是**在系统预设的固定选项集上做"选择题"**
+#    （choice / score / noul），把"理解/分流"变成可枚举、可校准、可审计的决策；
+#    **不提供自由问答式的语言性决策**。因此对外只暴露"决策点"（见 /api/edge/decision_points），
+#    通用 systemone 仅作开发/协议同构用（页面不暴露）。
+#   GET  /api/edge/status           —— 引擎状态（模型/形态/延迟）
+#   GET  /api/edge/decision_points  —— 决策点目录（选项集的单一事实源，页面据此渲染）
+#   POST /api/edge/parse_command    —— 决策点①喷洒指令解析（只解析，不执行）
+#   POST /api/edge/advise           —— 决策点②虫情处置研判（辅助参考，不驱动硬件）
+#   POST /api/edge/systemone        —— 低级协议接口（开发用，页面不暴露）
 # 刻意用普通 def：http 形态会同步访问本地服务，FastAPI 丢线程池，别堵事件循环。
 
 @app.get("/api/edge/status")
@@ -477,13 +482,29 @@ def edge_status(refresh: bool = False):
         return {"success": False, "available": False, "error": str(exc)}
 
 
+@app.get("/api/edge/decision_points")
+def edge_decision_points():
+    """系统用 EdgeJev 做的"选择题"决策点目录（选项集/用途/状态的单一事实源）。
+
+    status: active（已接入）/ experimental（可试跑，仅供参考）/ planned（规划中，待校准接入）。
+    """
+    try:
+        return {"success": True, "points": edge_engine.decision_points()}
+    except Exception as exc:
+        traceback.print_exc()
+        return {"success": False, "error": str(exc)}
+
+
 @app.post("/api/edge/systemone")
 def edge_systemone(payload: dict):
-    """通用类型化决策（官方 /v1/systemone 同构协议）。
+    """通用类型化决策 —— **开发/协议同构用**（官方 /v1/systemone 同构协议），页面不暴露。
+
+    用途：团队开发**新决策点**时先用它试跑、校准（scripts/edge_probes 的同一口径），
+    达标后再定义进 app/edge_engine.decision_points() 并接入链路。
+    注意本模型定位是"固定选项集上的选择题"，不做自由问答式（语言性）决策。
 
     body: {"state": "文本或 JSON", "questions": {"qid": {"type": "choice|score|noul",
            "instructions": "...", "criteria": {...}|[...]}}}
-    返回: {success, answers, usage, latency_ms, mode}
     """
     state = payload.get("state")
     questions = payload.get("questions")
@@ -534,7 +555,7 @@ def edge_parse_command(payload: dict):
 
 @app.get("/edge", response_class=HTMLResponse)
 async def edge_page():
-    """EdgeJev 推理入口页（指令解析 / 虫情研判 / 通用类型化决策）。"""
+    """EdgeJev 决策点页（选择题式：指令解析 / 虫情研判 / 决策点规划；不做自由问答）。"""
     return static_pages.load('edge')
 
 

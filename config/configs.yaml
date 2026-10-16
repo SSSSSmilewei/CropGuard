@@ -464,7 +464,7 @@ RAG:
 # 单题毫秒级、断网可用、运行时不依赖 torch、不上传任何数据。
 # 部署（唯一需要联网的一步，在任何一台有网的机器上跑一次即可）：
 #   python scripts/build_edge_model.py          # 产出 edge_models/jev-int8（~324MB，自包含）
-# 验证：GET /api/edge/status   ·   前端推理入口：http://<IP>:8080/edge
+# 验证：GET /api/edge/status   ·   决策点页：http://<IP>:8080/edge（选择题式，不做自由问答）
 EDGE:
   # 总开关（关掉后 /api/edge/* 返回 available=false，/api/ask_command 走回规则解析）
   enabled: true

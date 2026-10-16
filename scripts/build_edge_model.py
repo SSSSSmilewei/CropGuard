@@ -158,7 +158,7 @@ def main():
     for name in os.listdir(args.out):
         size_mb += os.path.getsize(os.path.join(args.out, name))
     print('\n完成 -> %s（%.0f MB，自包含可拷贝）' % (args.out, size_mb / 1e6))
-    print('  启动服务后访问 http://127.0.0.1:8080/edge 查看推理入口；')
+    print('  启动服务后访问 http://127.0.0.1:8080/edge 查看决策点页（选择题式）；')
     print('  GET /api/edge/status 可查引擎状态。配置项见 config/configs.yaml 的 EDGE 段。')
 
 

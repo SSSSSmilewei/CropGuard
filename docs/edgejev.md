@@ -16,7 +16,7 @@
 python api_server.py                 # 起服务（GUI/服务器都行，EdgeJev 是独立通道）
 ```
 
-* 打开 `http://<IP>:8080/edge` —— **推理入口页**（指令解析对照 / 虫情研判 / 通用决策）
+* 打开 `http://<IP>:8080/edge` —— **决策点页**（选择题式：指令解析对照 / 虫情研判 / 决策点规划；不做自由问答）
 * `GET /api/edge/status` —— 引擎状态（形态/模型/精度/延迟统计）
 * `/api/ask_command` 的 `engine` 参数 —— `auto`（默认）/ `edge` / `rule`
 
@@ -72,9 +72,10 @@ EdgeJev 只做「理解」，**绝不直接下发硬件**：
 
 | 接口 | 说明 |
 | --- | --- |
-| `GET /edge` | 推理入口页（指令解析对照 / 虫情研判 / 通用 systemone 实验台） |
+| `GET /edge` | 决策点页（选择题式：①指令解析 ②虫情研判 ③决策点规划） |
 | `GET /api/edge/status` | 引擎状态：可用性/形态/模型信息/累计延迟；`?refresh=true` 强制重探 |
-| `POST /api/edge/systemone` | 通用类型化决策（官方 `/v1/systemone` 同构协议） |
+| `GET /api/edge/decision_points` | 决策点目录（选项集 / 用途 / 状态，页面的单一事实源） |
+| `POST /api/edge/systemone` | 低级协议接口：**开发/协议同构用，页面不暴露**（官方 `/v1/systemone` 同构） |
 | `POST /api/edge/parse_command` | 喷洒指令解析（只解析；同时返回 edge 直译 / 规则解析 / 最终口径） |
 | `POST /api/edge/advise` | 检测结果 → 处置研判（**实验性**，零样本输出仅供参考） |
 | `POST /api/ask_command` | 既有指令入口，新增 `engine: auto\|edge\|rule` 参数 |

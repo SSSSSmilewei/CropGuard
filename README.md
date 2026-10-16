@@ -134,7 +134,7 @@ python scripts/ask_eval.py    # RAG 评测：库内召回率、库外拒答率�
 | ---- | ---- |
 | `GET /` | PC 演示页（上传检测 + 建议 + 手机入口二维码） |
 | `GET /eval` | **现场测评页**：20 样本 / 180 秒，动效计时 + 每张用时 + 评委判分 + 报告导出（与 GUI 同口径） |
-| `GET /edge` | **EdgeJev 推理入口**：本地类型化决策（指令解析对照 / 虫情研判 / 通用 systemone） |
+| `GET /edge` | **EdgeJev 本地决策**：选择题式决策点（指令解析对照 / 虫情研判 / 决策点规划） |
 | `GET /m` | **手机端主页**：拍照识别 / 实时识别 / 提问 / 喷洒 / 历史 |
 | `GET /stream` | 手机监测页（旧版，保留兼容） |
 | `POST /api/detect` | 上传图片检测（multipart）→ 带框结果图 + 风险 + 知识库建议 |
@@ -145,7 +145,8 @@ python scripts/ask_eval.py    # RAG 评测：库内召回率、库外拒答率�
 | `POST /api/ask_command` | 自然语言 → 喷洒意图（**默认只解析，需人工确认**；`engine: auto\|edge\|rule`） |
 | `POST /api/spray` | 手动喷洒（`{"group":"g1","duration":3,"via":"phone"}`） |
 | `GET /api/edge/status` | EdgeJev 引擎状态（形态/模型/精度/延迟）；`?refresh=true` 重探 |
-| `POST /api/edge/systemone` | 通用类型化决策（官方 `/v1/systemone` 同构协议） |
+| `GET /api/edge/decision_points` | 决策点目录（选项集/用途/状态的单一事实源；页面据此渲染） |
+| `POST /api/edge/systemone` | 低级协议接口（开发/协议同构用**，页面不暴露**；官方 `/v1/systemone` 同构） |
 | `POST /api/edge/parse_command` | EdgeJev 指令解析（返回 edge 直译 / 规则解析 / 最终口径三份对照） |
 | `POST /api/edge/advise` | 检测结果 → 处置研判（实验性，仅供参考） |
 | `GET /api/eval/config` | 测评页口径 + 样本目录状态（页面据此切换"服务器载入/上传模式"） |
@@ -360,7 +361,7 @@ python scripts/build_edge_model.py
 python api_server.py
 ```
 
-* **推理入口页**：`/edge` —— 指令解析（规则 × EdgeJev 对照）/ 虫情研判（实验性）/ 通用 systemone 实验台；
+* **决策点页**：`/edge` —— 只做"选择题式决策"：① 喷洒指令解析（规则 × EdgeJev 对照，已接入）② 虫情研判（实验性）③ 决策点规划（新增决策点的准入标准与路线）；**不提供自由问答入口**；
 * **指令兜底**：`/api/ask_command` 默认「规则优先 + EdgeJev 兜底（置信度闸门）」——
   规则没识别到、而模型高置信时才补位（如"把泵关了吧"→ 停止意图），
   **安全闸门（片区白名单 / 时长钳制 / 危险词 / 人工确认）完全不变，模型无权翻案**；

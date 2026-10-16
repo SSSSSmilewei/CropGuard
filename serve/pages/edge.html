@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CropGuard - EdgeJev 本地类型化决策 · 推理入口</title>
+<title>CropGuard - EdgeJev 本地类型化决策（选择题决策点）</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -23,7 +23,7 @@ body {
   background: linear-gradient(120deg, #3f7a41, #62a866); color: #eaffea;
   padding: 3px 10px; border-radius: 999px;
 }
-.header p { font-size: 12.5px; color: #8fd18f; margin-top: 3px; }
+.header p { font-size: 12.5px; color: #8fd18f; margin-top: 3px; max-width: 880px; line-height: 1.6; }
 .nav a {
   color: #cfe8cf; text-decoration: none; font-size: 13px; margin-left: 12px;
   padding: 7px 13px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px;
@@ -35,6 +35,13 @@ body {
 .panel h2 { font-size: 16px; color: #24502a; margin-bottom: 12px; }
 .panel h3 { font-size: 14px; color: #24502a; margin-bottom: 10px; }
 .muted { color: #6b7a68; font-size: 12.5px; }
+.mono { font-family: Consolas, 'Courier New', monospace; }
+
+/* 定位条 */
+.role-bar { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.8; }
+.role-bar .icon { font-size: 18px; }
+.role-bar b { color: #24502a; }
+.role-bar .no { color: #a33; font-weight: 600; }
 
 /* 状态条 */
 .status-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
@@ -55,9 +62,30 @@ body {
   background: #f2f6f1; color: #24502a; border: 1px solid #e3e9e1; font-weight: 600; }
 .tab.active { background: linear-gradient(120deg, #2d5a2d, #47a04a); color: #fff; border-color: transparent;
   box-shadow: 0 4px 14px rgba(45,90,45,.3); }
+.tab .st { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-left: 6px;
+  vertical-align: 1px; }
+.st.active { background: #dff3df; color: #2e7d32; }
+.st.experimental { background: #fff3e0; color: #b26a00; }
+.st.planned { background: #eef2fb; color: #3557a5; }
 .pane { display: none; }
 .pane.active { display: block; animation: paneIn .35s ease both; }
 @keyframes paneIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* 选项集（选择题的"题面"） */
+.optset { border: 1px dashed #cfe0cd; border-radius: 12px; background: #f7fbf6; padding: 14px 16px; margin-bottom: 16px; }
+.optset .head { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #24502a; font-weight: 700; margin-bottom: 4px; }
+.optset .head .hint { font-weight: 400; color: #6b7a68; font-size: 12px; }
+.qrow { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px;
+  padding-top: 10px; border-top: 1px solid #e9f1e8; flex-wrap: wrap; }
+.qrow:first-of-type { border-top: none; }
+.qrow .qname { min-width: 160px; font-size: 13px; color: #23301f; font-weight: 600; }
+.qrow .qname .t { font-size: 11px; font-weight: 700; color: #1d5fb0; background: #e3f0ff;
+  border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+.qrow .opts { display: flex; gap: 7px; flex-wrap: wrap; flex: 1; }
+.opt { font-size: 12.5px; border-radius: 8px; padding: 4px 11px; background: #fff;
+  border: 1px solid #d8e2d6; color: #3c4a38; }
+.opt b { color: #24502a; font-family: Consolas, monospace; font-weight: 700; }
+.opt .g { color: #8a97a3; margin-left: 5px; }
 
 /* 输入区 */
 .input-row { display: flex; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
@@ -96,7 +124,7 @@ input:focus, textarea:focus { outline: 2px solid rgba(71,160,74,.35); border-col
 /* 概率条 */
 .prob { margin-top: 8px; }
 .prob .row { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12.5px; }
-.prob .row .k { width: 70px; color: #6b7a68; font-family: Consolas, monospace; }
+.prob .row .k { width: 86px; color: #6b7a68; font-family: Consolas, monospace; }
 .prob .row .bar { flex: 1; height: 10px; background: #edf3ec; border-radius: 999px; overflow: hidden; }
 .prob .row .fill { height: 100%; width: 0; border-radius: 999px;
   background: linear-gradient(90deg, #6cc26f, #3f7a41); transition: width .6s cubic-bezier(.2,.8,.3,1.1); }
@@ -127,6 +155,21 @@ details summary { cursor: pointer; color: #6b7a68; font-size: 12.5px; margin-top
 .advice-card .m { font-size: 12px; color: #6b7a68; }
 .note-box { margin-top: 12px; font-size: 12.5px; color: #8a6d1a; background: #fff9e8;
   border-left: 4px solid #f6c453; border-radius: 8px; padding: 10px 13px; line-height: 1.7; }
+
+/* 决策点规划 */
+.plan-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 860px) { .plan-grid { grid-template-columns: 1fr; } }
+.plan-card { border: 1px solid #e3e9e1; border-radius: 12px; padding: 16px; background: #fbfdfa; }
+.plan-card h4 { font-size: 14px; color: #24502a; display: flex; align-items: center; gap: 8px; }
+.plan-card .meta { font-size: 12.5px; color: #6b7a68; margin-top: 8px; line-height: 1.8; }
+.plan-card .meta b { color: #23301f; }
+.plan-card .pre { margin-top: 8px; font-size: 12px; color: #8a6d1a; background: #fff9e8;
+  border-radius: 8px; padding: 8px 11px; line-height: 1.7; }
+.plan-steps { counter-reset: step; margin-top: 6px; }
+.plan-steps li { list-style: none; position: relative; padding: 8px 0 8px 40px; font-size: 13px; color: #3c4a38; }
+.plan-steps li::before { counter-increment: step; content: counter(step); position: absolute; left: 0; top: 7px;
+  width: 26px; height: 26px; border-radius: 50%; background: #e8f5e9; color: #2e7d32;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
 .spinner { display: inline-block; width: 14px; height: 14px; border-radius: 50%;
   border: 2px solid #cfe3cf; border-top-color: #2d5a2d; animation: spin .8s linear infinite;
   vertical-align: -2px; margin-right: 6px; }
@@ -136,8 +179,9 @@ details summary { cursor: pointer; color: #6b7a68; font-size: 12.5px; margin-top
 <body>
 <div class="header">
   <div>
-    <h1>EdgeJev 本地类型化决策 <span class="badge">离线 · CPU · 毫秒级</span></h1>
-    <p>一台 4 核 CPU 单题 15.6 ms 级 · 断网可用 · 运行时不依赖 torch · 数据不出本机</p>
+    <h1>EdgeJev 本地类型化决策 <span class="badge">选择题 · 离线 · CPU</span></h1>
+    <p>给定一段状态文本 → 在系统预设的固定选项集上做「选择题」（choice / score / noul），
+       把理解与分流变成可枚举、可校准、可审计的决策；模型不生成语言，也不做自由问答。</p>
   </div>
   <nav class="nav">
     <a href="/">首页</a>
@@ -147,9 +191,17 @@ details summary { cursor: pointer; color: #6b7a68; font-size: 12.5px; margin-top
 </div>
 
 <div class="container">
-  <!-- 引擎状态 -->
+  <!-- 定位 + 引擎状态 -->
   <div class="panel">
-    <div class="status-bar">
+    <div class="role-bar">
+      <span class="icon">🧭</span>
+      <div>
+        <b>模型定位：</b>在固定选项集上做选择题的本地决策器 —— 用于「指令理解」与「研判/分流」；
+        <span class="no">不提供自由问答式（语言性）决策</span>；
+        与硬件相关的动作仍由规则闸门（片区白名单 / 时长钳制 / 危险词 / 人工确认）主导。
+      </div>
+    </div>
+    <div class="status-bar" style="margin-top:14px;">
       <span class="chip off" id="engineChip"><span class="dot"></span>检测中…</span>
       <div class="kv" id="engineKv"></div>
       <span style="flex:1"></span>
@@ -158,56 +210,60 @@ details summary { cursor: pointer; color: #6b7a68; font-size: 12.5px; margin-top
     <div class="muted" id="engineHint" style="margin-top:8px;"></div>
   </div>
 
-  <!-- 三个入口 -->
+  <!-- 决策点 -->
   <div class="panel">
     <div class="tabs">
-      <div class="tab active" data-pane="cmd">① 喷洒指令解析（规则 × EdgeJev 对照）</div>
-      <div class="tab" data-pane="advise">② 虫情处置研判（实验性）</div>
-      <div class="tab" data-pane="raw">③ 通用类型化决策（推理入口）</div>
+      <div class="tab active" data-pane="cmd">① 喷洒指令解析<span class="st active">已接入</span></div>
+      <div class="tab" data-pane="advise">② 虫情处置研判<span class="st experimental">实验性</span></div>
+      <div class="tab" data-pane="plan">③ 决策点规划<span class="st planned">规划</span></div>
     </div>
 
     <!-- ① 指令解析 -->
     <div class="pane active" id="pane-cmd">
-      <h3>输入一句自然语言指令</h3>
+      <div class="optset" id="optset-cmd"><div class="head">题面加载中…</div></div>
+      <h3>试跑：输入一句指令</h3>
       <div class="input-row">
-        <input type="text" id="cmdText" value="给片区A喷3秒" placeholder="例如：把A区的水阀开一小会儿">
-        <button class="btn" id="btnCmd">解析</button>
+        <input type="text" id="cmdText" value="给片区A喷3秒" placeholder="例如：把泵关了吧">
+        <button class="btn" id="btnCmd">运行决策</button>
       </div>
       <div class="chips" id="cmdSamples"></div>
-      <div class="muted" style="margin-top:8px;">安全边界不变：解析结果只作“待确认建议”，真正下发必须走人工确认 + 片区白名单 + 时长钳制。</div>
+      <div class="muted" style="margin-top:8px;">安全边界不变：上方是"模型怎么看"，下方"最终口径"才是系统采用的结论
+        —— 仍需人工确认 + 片区白名单 + 时长钳制。</div>
       <div id="cmdResult"></div>
     </div>
 
     <!-- ② 虫情研判 -->
     <div class="pane" id="pane-advise">
-      <h3>用一份虫情（检测结果）做类型化研判 <span style="font-size:12px;color:#8a6d1a;">实验性 · 零样本输出仅供参考</span></h3>
-      <div class="muted" style="margin-bottom:8px;">模型对这类自拟问题是零样本（详见 docs/edgejev.md 的校准记录），
-        输出只能当参考信号；正式业务口径仍以规则风险分级与 risk_map 为准。</div>
+      <div class="optset" id="optset-advise"><div class="head">题面加载中…</div></div>
+      <h3>试跑：给一份检测结果</h3>
       <div class="chips" id="adviseSamples"></div>
       <div class="input-row" style="margin-top:10px;">
         <textarea id="adviseText" spellcheck="false"></textarea>
       </div>
       <div class="input-row" style="margin-top:10px;">
-        <button class="btn" id="btnAdvise">研判</button>
+        <button class="btn" id="btnAdvise">运行决策</button>
         <button class="btn ghost" id="btnAdviseLast">用最近一次检测结果</button>
       </div>
+      <div class="note-box">🧪 实验性：模型对自造研判问题属零样本（实测见 docs/edgejev.md），输出仅作参考信号；
+        自动联动与风险分级仍按 SPRAY.risk_map 的既有口径执行，不被本页结论改动。</div>
       <div id="adviseResult"></div>
     </div>
 
-    <!-- ③ 通用决策 -->
-    <div class="pane" id="pane-raw">
-      <h3>通用 /v1/systemone 协议（state + questions → 类型化答案）</h3>
-      <div class="chips" id="rawSamples"></div>
-      <div class="input-row" style="margin-top:10px;">
-        <textarea id="rawState" spellcheck="false" placeholder='state（文本或 JSON）：例如 客户反馈…'></textarea>
+    <!-- ③ 决策点规划 -->
+    <div class="pane" id="pane-plan">
+      <h3>这部分怎么用：只做选择题，不做自由问答</h3>
+      <div class="optset" style="border-style:solid;">
+        <div class="head">规划原则 <span class="hint">（新增决策点的准入标准）</span></div>
+        <ul class="plan-steps">
+          <li>每个决策点 = <b>一段固定的状态输入</b> + <b>一组写死的选项集</b>，模型只负责"选"；选项集随 决策点定义 一起评审。</li>
+          <li>先在 <b class="mono">scripts/edge_probes/</b> 用真实语料校准（对照集/阈值），<b>达标才接入</b>系统链路。</li>
+          <li>接入后必须绑定明确的消费方与边界：要么像指令解析一样走安全闸门，要么只作"参考信号"（显式标注）。</li>
+          <li>不建设"通用问答/任意提问"入口 —— 自造问题的零样本准确率不可靠，也偏离"类型化选择题"的定位。</li>
+        </ul>
       </div>
-      <div class="input-row" style="margin-top:10px;">
-        <textarea id="rawQuestions" spellcheck="false" style="min-height:150px;font-family:Consolas,monospace;font-size:12.5px;"></textarea>
-      </div>
-      <div class="input-row" style="margin-top:10px;">
-        <button class="btn" id="btnRaw">执行决策</button>
-      </div>
-      <div id="rawResult"></div>
+      <div class="plan-grid" id="planGrid"></div>
+      <div class="muted" style="margin-top:14px;">开发新决策点时：先用 <code class="mono">POST /api/edge/systemone</code>（低级协议接口，页面不暴露）
+        试跑与校准，再定义进 <code class="mono">app/edge_engine.decision_points()</code> 并接入。</div>
     </div>
   </div>
 </div>
@@ -239,6 +295,75 @@ function growBars(root) {
 }
 const fmtMs = (ms) => (ms == null ? '—' : (ms < 1 ? '<1' : Math.round(ms)) + ' ms');
 
+/* ---------------- 题面（选项集）渲染：来自 /api/edge/decision_points 单一事实源 ---------------- */
+const Q_LABEL = {intent: '意图', group: '片区', seconds: '时长档位', unsafe: '危险度',
+                 action: '处置动作', urgency: '紧迫度', spray_needed: '是否达喷洒线',
+                 route: '问题类别', channel: '处理通道', urgent: '紧急度'};
+const OPT_GLOSS = {
+  spray: '开始/执行喷洒', stop: '停止喷洒', other: '与喷洒无关',
+  g1: '片区A', g2: '片区B', all: '全体片区', none: '未提及',
+  true: '成立 · 是', false: '不成立 · 否',
+  watch: '持续观察', pest_qa: '库内植保问答', device: '设备操作', off_topic: '超纲/闲聊',
+  pesticide: '植保防治', repair: '设备检修', irrigation: '灌溉管理',
+};
+// 同名选项在不同题目里含义不同（如 other/none/spray 各题含义不同，按题目覆盖）
+const OPT_GLOSS_BY_Q = {
+  action: {spray: '立即安排喷洒', watch: '提高监测频率', none: '无需处理'},
+  spray_needed: {true: '已达到喷洒线', false: '未达到'},
+  channel: {other: '其他'},
+  route: {},
+};
+const TYPE_NAME = {choice: 'choice·单选', score: 'score·档位', noul: 'noul·是否'};
+
+function renderOptset(el, point) {
+  const rows = Object.entries(point.questions || {}).map(([qid, q]) => {
+    let opts = '';
+    if (q.type === 'choice') {
+      const g = OPT_GLOSS_BY_Q[qid] || {};
+      opts = Object.entries(q.criteria || {}).map(([k, v]) =>
+        `<span class="opt"><b>${esc(k)}</b><span class="g">${esc(g[k] || OPT_GLOSS[k] || '')}</span></span>`).join('');
+    } else if (q.type === 'score') {
+      opts = (q.criteria || []).map((c, i) =>
+        `<span class="opt"><b>档位${i + 1}</b><span class="g">${esc(c)}</span></span>`).join('');
+    } else {
+      opts = `<span class="opt"><b>true</b><span class="g">成立</span></span>
+              <span class="opt"><b>false</b><span class="g">不成立</span></span>`;
+    }
+    return `<div class="qrow">
+      <div class="qname">${esc(Q_LABEL[qid] || qid)}<span class="t">${TYPE_NAME[q.type] || q.type}</span></div>
+      <div class="opts">${opts}</div></div>`;
+  }).join('');
+  el.innerHTML = `<div class="head">本题的固定选项集 <span class="hint">（系统预设 · ${esc(point.state_hint || '')}）
+    · 模型只负责在这些选项中"选"</span></div>${rows}`;
+}
+
+let POINTS = [];
+async function loadPoints() {
+  try {
+    const r = await (await fetch('/api/edge/decision_points')).json();
+    POINTS = (r && r.points) || [];
+  } catch (e) { POINTS = []; }
+  const cmd = POINTS.find((p) => p.id === 'command');
+  const det = POINTS.find((p) => p.id === 'detection');
+  if (cmd) renderOptset($('optset-cmd'), cmd);
+  if (det) renderOptset($('optset-advise'), det);
+  renderPlan(POINTS.filter((p) => p.status === 'planned'));
+}
+
+function renderPlan(planned) {
+  $('planGrid').innerHTML = planned.map((p) => `
+    <div class="plan-card">
+      <h4>${esc(p.name)} <span class="st planned" style="font-size:11px;font-weight:700;padding:1px 8px;border-radius:999px;">规划中</span></h4>
+      <div class="meta"><b>输入状态：</b>${esc(p.state_hint)}<br><b>预期消费方：</b>${esc(p.used_by)}</div>
+      <div class="optset" style="margin:10px 0 0;padding:10px 12px;" data-point="${esc(p.id)}"></div>
+      <div class="pre">⏳ 前置条件：${esc(p.prerequisites || '')}</div>
+    </div>`).join('');
+  planned.forEach((p) => {
+    const el = $('planGrid').querySelector(`.optset[data-point="${p.id}"]`);
+    if (el) renderOptset(el, p);
+  });
+}
+
 /* ---------------- 引擎状态 ---------------- */
 async function refreshStatus(refresh) {
   const chip = $('engineChip');
@@ -255,7 +380,7 @@ async function refreshStatus(refresh) {
         s.backend ? `后端 <b>${esc(s.backend)}</b>` : '',
         s.precision ? `精度 <b>${esc(s.precision)}</b>` : '',
         s.provider ? `运行 <b>${esc(s.provider)}</b>` : '',
-        `累计调用 <b>${s.calls}</b>`,
+        `累计决策 <b>${s.calls}</b>`,
         `平均延迟 <b>${fmtMs(s.avg_ms)}</b>`,
       ].filter(Boolean).join('');
       $('engineHint').textContent = '';
@@ -287,10 +412,10 @@ async function runCmd() {
   const text = $('cmdText').value.trim();
   if (!text) return;
   const box = $('cmdResult');
-  box.innerHTML = '<div class="empty-hint"><span class="spinner"></span>EdgeJev 解析中…</div>';
+  box.innerHTML = '<div class="empty-hint"><span class="spinner"></span>EdgeJev 决策中…</div>';
   const r = await post('/api/edge/parse_command', {text});
   if (!r.success) {
-    box.innerHTML = `<div class="empty-hint">解析失败：${esc(r.error || (r.available === false ? '引擎未部署' : '未知错误'))}</div>`;
+    box.innerHTML = `<div class="empty-hint">决策失败：${esc(r.error || (r.available === false ? '引擎未部署' : '未知错误'))}</div>`;
     if (r.available === false) refreshStatus(true);
     return;
   }
@@ -304,7 +429,7 @@ async function runCmd() {
   box.innerHTML = `
     <div class="results">
       <div class="res-card">
-        <h3>最终口径（实际采用）<span class="eng comb">规则优先 + 兜底</span>
+        <h3>最终口径（系统采用）<span class="eng comb">规则优先 + 兜底</span>
           <span class="latency">⚡ ${fmtMs(r.latency_ms)}</span></h3>
         <div class="verdict-line">
           <span class="badge ${bad ? 'badge-bad' : 'badge-ok'}">${bad ? '不执行' : '可确认执行'}</span>
@@ -320,11 +445,11 @@ async function runCmd() {
         </table>
       </div>
       <div class="res-card">
-        <h3>EdgeJev 直译<span class="eng edge">模型输出</span></h3>
+        <h3>EdgeJev 的选择<span class="eng edge">模型输出 · 选择题</span></h3>
         <div class="verdict-line"><span class="lbl">意图</span> <b>${esc(intA.choice || '-')}</b>
           · <span class="lbl">片区</span> <b>${esc(grpA.choice || '-')}</b></div>
         <div class="prob">${barRows(intA.probabilities, intA.choice)}</div>
-        <details><summary>原始 answers JSON</summary>
+        <details><summary>原始 answers JSON（四题的选择与概率）</summary>
           <pre class="raw">${esc(JSON.stringify(answers, null, 2))}</pre></details>
       </div>
     </div>
@@ -338,7 +463,8 @@ async function runCmd() {
           <td>${rule.valid ? '✓' : '✗'}</td><td>${esc(rule.reply || '')}</td>
         </tr>
       </table>
-      <div class="muted" style="margin-top:8px;">规则解析负责确定性（数字/片区关键词），EdgeJev 负责改写与口语（规则拿不准时兜底）；安全闸门（危险词/白名单/钳制）由服务端统一执行。</div>
+      <div class="muted" style="margin-top:8px;">规则负责确定性（数字/片区关键词），EdgeJev 负责改写与口语（规则拿不准时兜底）；
+        安全闸门（危险词/白名单/钳制）由服务端统一执行。</div>
     </div>`;
   growBars(box);
 }
@@ -383,91 +509,23 @@ async function runAdvise(useLast) {
   const ACTION_CN = {spray: '立即安排喷洒', watch: '提高监测频率', none: '无需处理'};
   box.innerHTML = `
     <div class="advice-grid">
-      <div class="advice-card"><div class="t">建议动作</div>
+      <div class="advice-card"><div class="t">处置动作（选择题）</div>
         <div class="v">${esc(ACTION_CN[act.choice] || act.choice || '—')}</div>
         <div class="prob">${barRows(act.probabilities, act.choice)}</div></div>
-      <div class="advice-card"><div class="t">紧急程度</div>
-        <div class="v">${fmtScore(urg)}</div>
-        <div class="m">档位 ${esc(JSON.stringify((urg.legend || {})[Math.round(urg.score || 0)] || '中'))}</div>
+      <div class="advice-card"><div class="t">紧迫度（档位题）</div>
+        <div class="v">${fmtUrgency(urg)}</div>
+        <div class="m">期望档位 ${(urg.score || 0).toFixed(2)} / ${Math.max(0, Object.keys(urg.legend || {}).length - 1)}</div>
         <div class="prob">${barRows(urg.probabilities, String(Math.round(urg.score || 0)))}</div></div>
-      <div class="advice-card"><div class="t">是否达到喷洒线</div>
-        <div class="v" style="color:${(need.noul || 0) >= 0.5 ? '#c0392b' : '#2e7d32'}">${(need.noul || 0) >= 0.5 ? '已达到' : '未达到'}</div>
-        <div class="m">置信度 ${((need.noul || 0) * 100).toFixed(0)}%</div></div>
+      <div class="advice-card"><div class="t">达到喷洒线？（是否题）</div>
+        <div class="v" style="color:${(need.noul || 0) >= 0.5 ? '#c0392b' : '#2e7d32'}">${(need.noul || 0) >= 0.5 ? '达到' : '未达到'}</div>
+        <div class="m">P(true) = ${((need.noul || 0) * 100).toFixed(1)}%</div></div>
     </div>
     <div class="note-box">⚖️ ${esc(r.note || '类型化决策结果仅供参考')} · 输入状态：${esc(r.state_text || '')}</div>`;
   growBars(box);
 }
-function fmtScore(s) {
+function fmtUrgency(s) {
   const lv = ['很低', '较低', '中等', '较高', '很高'];
   return esc(lv[Math.min(4, Math.max(0, Math.round((s && s.score) || 0)))] || '中等');
-}
-
-/* ---------------- ③ 通用决策 ---------------- */
-const RAW_SAMPLES = [
-  {label: '工单路由（官方示例）', state: '我的信用卡被扣了两次款，麻烦退一笔。',
-   questions: {
-     dept: {type: 'choice', instructions: '该转给哪个组？',
-            criteria: {billing: '支付、扣款、发票、退款', technical: '程序缺陷、报错', sales: '售前咨询、定价'}},
-     urgent: {type: 'noul', instructions: '这条消息表达了紧急或时间压力'}}},
-  {label: '虫情文本研判', state: '田间巡查：玉米叶片背面发现大量蚜虫聚集，部分植株卷叶，温度 28℃ 湿度偏高。',
-   questions: {
-     level: {type: 'choice', instructions: '虫情严重程度？',
-             criteria: {light: '零星发生', mid: '局部普遍', heavy: '大面积爆发'}},
-     act: {type: 'choice', instructions: '建议的处置动作？',
-            criteria: {now: '立即喷洒', watch: '持续观察', none: '无需处理'}},
-     confidence_score: {type: 'score', instructions: '处置紧迫度', criteria: ['很低', '较低', '中等', '较高', '很高']}}},
-  {label: '客服情绪 + 紧急度', state: '客户说：你们这系统到底行不行？明天就要上会演示了，出问题谁负责？',
-   questions: {
-     anger: {type: 'score', instructions: '客户的不满程度', criteria: ['平静陈述', '有情绪但讲道理', '非常愤怒']},
-     urgent: {type: 'noul', instructions: '这条消息表达了紧急或时间压力'}}},
-];
-$('rawSamples').innerHTML = RAW_SAMPLES.map((s, i) => `<span class="c" data-i="${i}">${esc(s.label)}</span>`).join('');
-$('rawSamples').addEventListener('click', (e) => {
-  const i = e.target.dataset && e.target.dataset.i;
-  if (i == null) return;
-  const s = RAW_SAMPLES[+i];
-  $('rawState').value = s.state;
-  $('rawQuestions').value = JSON.stringify(s.questions, null, 2);
-  runRaw();
-});
-$('rawState').value = RAW_SAMPLES[0].state;
-$('rawQuestions').value = JSON.stringify(RAW_SAMPLES[0].questions, null, 2);
-$('btnRaw').addEventListener('click', runRaw);
-
-async function runRaw() {
-  const box = $('rawResult');
-  let questions;
-  try { questions = JSON.parse($('rawQuestions').value || '{}'); }
-  catch (e) { box.innerHTML = `<div class="empty-hint">questions JSON 解析失败：${esc(e.message)}</div>`; return; }
-  box.innerHTML = '<div class="empty-hint"><span class="spinner"></span>决策中…</div>';
-  const r = await post('/api/edge/systemone', {state: $('rawState').value, questions});
-  if (!r.success) {
-    box.innerHTML = `<div class="empty-hint">决策失败：${esc(r.error || '（引擎未部署？）')}</div>`;
-    return;
-  }
-  const cards = Object.entries(r.answers || {}).map(([qid, a]) => {
-    if (a.type === 'choice') {
-      return `<div class="res-card"><h3>${esc(qid)} <span class="eng edge">choice</span></h3>
-        <div class="verdict-line"><b>${esc(a.choice)}</b> · 置信 ${(a.confidence * 100).toFixed(0)}%</div>
-        <div class="prob">${barRows(a.probabilities, a.choice)}</div></div>`;
-    }
-    if (a.type === 'noul') {
-      return `<div class="res-card"><h3>${esc(qid)} <span class="eng edge">noul</span></h3>
-        <div class="verdict-line"><b>${a.noul >= 0.5 ? '成立' : '不成立'}</b>
-          （P(true)=${(a.noul * 100).toFixed(1)}%）</div>
-        <div class="prob"><div class="row top"><span class="k">true</span>
-          <span class="bar"><span class="fill" data-w="${(a.noul * 100).toFixed(1)}"></span></span>
-          <span class="v">${(a.noul * 100).toFixed(1)}%</span></div></div></div>`;
-    }
-    return `<div class="res-card"><h3>${esc(qid)} <span class="eng edge">score</span></h3>
-      <div class="verdict-line">期望档位 <b>${(a.score || 0).toFixed(2)}</b> / ${Object.keys(a.legend || {}).length - 1}</div>
-      <div class="prob">${barRows(a.probabilities, String(Math.round(a.score || 0)))}</div></div>`;
-  }).join('');
-  box.innerHTML = `<div class="muted" style="margin:14px 0 4px;">
-      <span class="latency">⚡ ${fmtMs(r.latency_ms)}</span>
-      &nbsp;模型 ${esc(r.model || '-')} · 输入 ${(r.usage && r.usage.input_tokens) || '?'} tokens</div>
-    <div class="results">${cards}</div>`;
-  growBars(box);
 }
 
 /* ---------------- 标签页 ---------------- */
@@ -481,6 +539,7 @@ document.querySelectorAll('.tab').forEach((t) => {
 });
 
 refreshStatus(false);
+loadPoints();
 </script>
 </body>
 </html>

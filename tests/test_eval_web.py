@@ -107,9 +107,15 @@ def test_eval_page_renders_with_placeholders_filled():
 
 
 @test_case
-def test_edge_page_and_eval_nav_exist():
+def test_edge_page_is_choice_based_decision_points():
+    """EdgeJev 页面定位：选择题式决策点（不做通用/自由问答入口）。"""
     from serve import pages as static_pages
     html = static_pages.load('edge')
-    assert '推理入口' in html and 'systemone' in html, 'EdgeJev 页面缺失关键内容'
+    assert '选择题' in html, '页面必须明确"选择题"定位'
+    assert '决策点规划' in html, '应有决策点规划 Tab'
+    assert '本题的固定选项集' in html, '应展示固定选项集（题面）'
+    # 被明确要求删掉的"通用类型化决策（推理入口）"不得再出现
+    assert '通用类型化决策' not in html, '通用决策台应已移除'
+    assert '推理入口' not in html, '不再以"推理入口"的形态暴露自由问答'
     idx = static_pages.load('index')
     assert '/eval' in idx and '/edge' in idx, '首页应给两个新页面加入口'

@@ -615,3 +615,84 @@ def decide_detection(detections, risk=None):
         out['state_text'] = _state_text_of_detections(detections, risk)
         out['note'] = '类型化决策结果仅供参考；自动联动仍按 SPRAY.risk_map 的既有口径执行。'
     return out
+
+
+# ---------------------------------------------------------------- 决策点目录（选择题）
+# ⚠️ 定位（2026-10-16 与用户对齐）：
+#   EdgeJev 的作用是**在系统预设的固定选项集上做"选择题"**（choice / score / noul），
+#   把"理解/分流"变成可枚举、可校准、可审计的决策；**不提供自由问答式的语言性决策**。
+#   因此对外只暴露"决策点"：每个决策点 = 一段状态文本 + 一组写死的选项；
+#   新增决策点必须先在 scripts/edge_probes 里用真实语料校准，达标后再接入。
+#   本目录是页面的**单一事实源**（页面只渲染，不自己定义题目）。
+#
+# status 含义：
+#   active       已接入系统链路（有真实消费方）
+#   experimental 已实现、可在页面上试跑，但输出只作参考（未接入自动动作）
+#   planned      规划中：选项集已定义，待校准/触发条件具备后再接入
+
+# —— 规划 1：问答意图分流（前置于 RAG 拒答闸门）——
+QA_ROUTING_QUESTIONS = {
+    'route': {
+        'type': 'choice',
+        'instructions': 'What is the user asking about?',
+        'criteria': {
+            'pest_qa': 'pest control, pesticide, crop disease prevention',
+            'device': 'device operation, how to use the system or hardware',
+            'off_topic': 'weather, market prices, chit-chat, unrelated topics',
+        },
+    },
+}
+
+# —— 规划 2：上报文本分流（农户上报 / 巡查记录 → 处理通道）——
+REPORT_TRIAGE_QUESTIONS = {
+    'channel': {
+        'type': 'choice',
+        'instructions': 'Which team should handle this report?',
+        'criteria': {
+            'pesticide': 'pest outbreak, insects found, need spraying',
+            'repair': 'device broken, error, hardware fault',
+            'irrigation': 'watering, drought, soil moisture',
+            'other': 'anything else',
+        },
+    },
+    'urgent': {
+        'type': 'noul',
+        'instructions': 'Is this report urgent and time-critical?',
+    },
+}
+
+
+def decision_points():
+    """系统里用 EdgeJev 做的选择题决策点（页面渲染的唯一事实源）。
+
+    每个决策点：状态文本是什么、选项集（写死的 criteria）、系统怎么消费这个决策、
+    以及（规划项）接入前的前置条件。
+    """
+    return [
+        {
+            'id': 'command', 'name': '喷洒指令解析', 'status': 'active',
+            'state_hint': '一句自然语言指令（如：把泵关了吧）',
+            'used_by': '/api/ask_command：规则优先，模型高置信兜底；安全闸门（白名单/钳制/人工确认）完全不变',
+            'questions': COMMAND_QUESTIONS,
+        },
+        {
+            'id': 'detection', 'name': '虫情处置研判', 'status': 'experimental',
+            'state_hint': '一份检测结果（害虫 / 置信度 / 风险等级）',
+            'used_by': '/api/edge/advise：辅助参考，不驱动硬件、不改动既有风险分级口径',
+            'questions': DETECTION_QUESTIONS,
+        },
+        {
+            'id': 'qa_routing', 'name': '问答意图分流', 'status': 'planned',
+            'state_hint': '用户在问答框里的一句话',
+            'used_by': '计划：前置于 RAG 拒答闸门（库内植保问答 / 设备操作 / 超纲闲聊）',
+            'prerequisites': '自造问题属零样本，命中率不足（见 docs/edgejev.md）：先按现场问法校准，达标后再接入',
+            'questions': QA_ROUTING_QUESTIONS,
+        },
+        {
+            'id': 'report_triage', 'name': '上报文本分流', 'status': 'planned',
+            'state_hint': '农户上报 / 巡查记录的一段文本',
+            'used_by': '计划：分流到处理通道（植保防治 / 设备检修 / 灌溉管理 / 其他）',
+            'prerequisites': '选项集已定义；待上报入口确定、语料就绪后校准接入',
+            'questions': REPORT_TRIAGE_QUESTIONS,
+        },
+    ]
