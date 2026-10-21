@@ -728,3 +728,50 @@ def test_export_eval_report_contains_summary():
     assert '识别正确' in text, text[:400]
     assert '总分' in text, text[:400]
     assert '正确' in text and '错误' in text, '逐样本评判应写进报告'
+
+
+# ==================== 拍照 / 实时竞态 ====================
+@test_case
+def test_inflight_live_result_does_not_steal_snap_sample():
+    """实时检测中点拍照：推理线程里那一帧**实时帧**的结果会先回来。
+
+    旧代码把它当成"拍下的那张"：定格错帧、写进评测日志，真正拍的那张反而不记。
+    现在实时帧结果在拍照等待期间一律丢弃，拍照结果回来才写一行。
+    """
+    w, mod = _get_window()
+    _reset(w)
+    w.camera = _FakeCamera(_frame())
+    w.worker = _FakeWorker()
+    w.is_running = True
+    w.timer.start(30)
+    try:
+        w.snap_and_detect()
+        # 1) 在途的实时帧结果先到
+        w.on_detect_result(_mk_results('army_worm', 0.66), {}, '0.01s', 'T',
+                           mod.LIVE_FRAME_NAME, _frame())
+        assert w.RowLength == 0, '实时帧结果不能被记成样本'
+        assert w._snap_pending is True, '实时帧结果不能消耗掉拍照定格'
+        assert w._sample_capture is True, '实时帧结果不能消耗掉样本标记'
+        # 2) 拍照结果到达 → 记一行，且是拍照那一帧的结果
+        w.on_detect_result(_mk_results('aphids', 0.80), {}, '0.01s', 'T',
+                           mod.SNAP_FRAME_NAME, _frame())
+        assert w.RowLength == 1, w.RowLength
+        rec = w._current_record
+        assert rec['results'][0][0] == 'aphids', rec['results']
+    finally:
+        w.timer.stop()
+        w.is_running = False
+        w.camera = None
+        w.worker = None
+        w._snap_pending = False
+        w._sample_capture = False
+
+
+@test_case
+def test_video_frames_never_log():
+    """视频逐帧检测与实时流同性质，不能把评测日志刷满、提前触发满 20 停表。"""
+    w, _ = _get_window()
+    _reset(w, start_type='video')
+    for _ in range(3):
+        _record(w, _mk_results('aphids', 0.80), sample=False)
+    assert w.RowLength == 0, f'视频帧不该写日志，实际写了 {w.RowLength} 行'

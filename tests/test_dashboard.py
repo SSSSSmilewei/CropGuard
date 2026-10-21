@@ -157,7 +157,11 @@ def test_dashboard_has_no_hardware_write_calls():
 
 @test_case
 def test_dashboard_route_registered():
-    """api_server.py 必须注册 /dashboard（用 ast 解析，不 import 重依赖）。"""
+    """api_server.py 必须注册离线快照路由 /dashboard-offline（用 ast 解析，不 import 重依赖）。
+
+    2026-10-21 起 `/dashboard` 是 Vue 实时看板（serve/spa.py 的 ROUTES），
+    这一页单文件快照保留为"断网/双击打开"的兜底，路由改为 /dashboard-offline。
+    """
     src = (ROOT / 'api_server.py').read_text(encoding='utf-8')
     tree = ast.parse(src)
     paths = set()
@@ -170,7 +174,7 @@ def test_dashboard_route_registered():
                 if isinstance(fn, ast.Attribute) and fn.attr in ('get', 'post'):
                     if deco.args and isinstance(deco.args[0], ast.Constant):
                         paths.add(deco.args[0].value)
-    assert '/dashboard' in paths, f'api_server.py 没注册 /dashboard（现有: {sorted(paths)}）'
+    assert '/dashboard-offline' in paths, f'api_server.py 没注册 /dashboard-offline（现有: {sorted(paths)}）'
     assert '/dashboard' in src.split('数据看板')[0] or '数据看板' in src, '启动横幅里应提示看板地址'
 
 

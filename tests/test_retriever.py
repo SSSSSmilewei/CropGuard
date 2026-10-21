@@ -75,3 +75,36 @@ def test_intent_boost_prefers_control_for_treatment_question():
     """问"怎么治"时，防治片段应排在寄主片段前面。"""
     res = R.search('蚜虫怎么防治')
     assert res[0]['type'] in ('control', 'monitor'), [c['id'] for c in res]
+
+
+# ==================== 拒答闸门（gate_score）====================
+from llm.retriever import gate_score  # noqa: E402
+
+_CTX = ['aphids']
+
+
+@test_case('今天股票怎么样')
+@test_case('你好')
+@test_case('推荐一部电影')
+@test_case('怎么申请农业补贴')
+def test_gate_rejects_out_of_domain_even_with_context(question):
+    """带检测上下文时库外问题也必须过不了闸（旧实现用加权分，上下文一加就过）。"""
+    res = R.search(question, context_pests=_CTX)
+    assert gate_score(res) < 0.18, f'{question} gate={gate_score(res)}'
+
+
+@test_case('这个虫怎么防治')
+@test_case('现在检测到的虫怎么处理')
+@test_case('检测到的害虫有什么危害')
+def test_gate_allows_deictic_questions_about_detection(question):
+    """指代当前检测结果的提问是正常用法，不能被误拒。"""
+    res = R.search(question, context_pests=_CTX)
+    assert gate_score(res) >= 0.18, f'{question} gate={gate_score(res)}'
+
+
+@test_case('蚜虫怎么防治')
+@test_case('粘虫怎么防治')
+def test_gate_allows_short_named_questions(question):
+    """原始 TF-IDF 分偏低的短问题，点名了害虫就该过闸。"""
+    res = R.search(question)
+    assert gate_score(res) >= 0.18, f'{question} gate={gate_score(res)}'

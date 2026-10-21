@@ -32,15 +32,25 @@ imgsz = int(cfg_model.IMGSIZE)
 # 设备可用环境变量临时覆盖（config 里通常写死 'cuda:0'）：
 #   CPU-only 机器上用  $env:CG_DEVICE='cpu'  起服务，就不用改配置（也不会误提交 CPU 配置）
 device = str(os.environ.get('CG_DEVICE') or cfg_model.DEVICE)
+try:
+    import torch
+    if str(device).startswith('cuda') and not torch.cuda.is_available():
+        # 与 main.py 同口径：配置写 cuda 但这台机器没卡/没装 CUDA 版 torch → 回退 CPU，
+        # 否则服务一启动就在预热推理处崩掉
+        print('[WARN] CUDA 不可用，自动回退到 CPU 推理')
+        device = 'cpu'
+except ImportError:
+    pass
 chinese_name = config.get('CONFIG', {}).get('chinese_name', {})
 
 # ---------------------------------------------------------------- 模型加载
 if not os.path.exists(weights_path):
-    print(f"[WARN] Weight file {weights_path} not found")
-    # 兜底权重 yolov8s.pt 已在 2026-10-08 清理时删除；
-    # 当前 config/configs.yaml 指向的 best.pt 存在，正常不会走到这里。
-    weights_path = 'yolov8s.pt'
-    print(f"[WARN] Falling back to {weights_path} (not present locally; ultralytics will try to download it)")
+    # 绝不回退到 'yolov8s.pt'：本地早已删除，ultralytics 会**联网下载 COCO 80 类模型**，
+    # 离线现场直接卡死；就算下到了，类别也和 27 类害虫对不上，检测结果全是错的。
+    raise SystemExit(
+        f"[ERROR] 权重文件不存在: {weights_path}\n"
+        f"        请把 config/configs.yaml 的 MODEL.WEIGHT 指向现有权重"
+        f"（默认 runs/train/pest27_final4/weights/best.pt）")
 
 print(f"[INFO] Loading model: {weights_path}")
 print(f"[INFO] Device: {device}")
@@ -90,6 +100,7 @@ spray = SprayController(
     default_protocol=str(cfg_spray.get('default_protocol', 'json') or 'json'),
     direct_max_sec=cfg_spray.get('direct_max_sec', 300),
     status_timeout=float(cfg_spray.get('status_timeout', 1.5) or 1.5),
+    nodes=cfg_spray.get('nodes', []) or [],
 )
 _protocols = {g: spray.protocol_of(g) for g in spray.http_targets}
 print(f"[INFO] Spray transport={spray.transport} available={spray.available} "
@@ -102,8 +113,12 @@ cfg_cameras = config.get('CONFIG', {}).get('cameras') or []
 camera_num = int(config.get('CONFIG', {}).get('camera_num', 0))
 cfg_camera = config.get('CAMERA', {}) or {}
 
-# 相机 key -> CameraSource（仅供 /api/camera/* 查询与重启；引用计数仍由 camera_source 维护）
+# 相机 key -> CameraSource：当前**有订阅者**的相机（推理泵按它逐路推理）。
+# 引用计数由 camera_source 维护；这里的增删必须走 _cam_subscribe/_cam_unsubscribe，
+# 保证"最后一个订阅者离开"时才摘掉，不会出现一个客户端断开、另一个就没检测了。
 _CAM_SOURCES = {}
+_cam_subs = {}
+_pump_lock = threading.Lock()
 
 
 def _cam_kwargs():
@@ -116,6 +131,27 @@ def _cam_kwargs():
         'stale_sec': float(cfg_camera.get('stale_sec', 2.0) or 2.0),
         'probe_timeout': float(cfg_camera.get('probe_timeout', 8.0) or 5.0),
     }
+
+
+def _cam_subscribe(key, source, name=None):
+    """订阅一路相机（引用计数 +1），并登记到 _CAM_SOURCES 供推理泵使用。"""
+    src = cam_get_source(key, source=source, name=name, **_cam_kwargs())
+    with _pump_lock:
+        _CAM_SOURCES[key] = src
+        _cam_subs[key] = _cam_subs.get(key, 0) + 1
+    return src
+
+
+def _cam_unsubscribe(key):
+    """退订（引用计数 -1）；本进程的最后一个订阅者离开才从 _CAM_SOURCES 摘掉。"""
+    with _pump_lock:
+        n = _cam_subs.get(key, 0) - 1
+        if n <= 0:
+            _cam_subs.pop(key, None)
+            _CAM_SOURCES.pop(key, None)
+        else:
+            _cam_subs[key] = n
+    cam_release_source(key)
 
 
 def _camera_key(cam_id=None):
@@ -186,7 +222,8 @@ def _record_history(risk_level, detections, group=None, duration=None, source='a
 
 
 # ---------------------------------------------------------------- 共享推理泵状态（多客户端只跑一份推理）
-_pump_lock = threading.Lock()
 _pump_state = {'task': None, 'stop': None, 'last': None, 'last_ts': 0.0,
-               'seq': 0, 'count': 0}
+               'seq': 0, 'count': 0,
+               # 按相机 key 分开的最新结果：{key: {'last', 'last_ts', 'seq'}}
+               'by_key': {}}
 _last_result = {"result": None}          # 最近一次检测结果，供 /api/ask "结合当前虫情提问"用

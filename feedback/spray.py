@@ -38,6 +38,20 @@ except ImportError:
     requests = None
 
 
+def _lan_session():
+    """节点都在局域网里：发指令**绝不能走系统代理**。
+
+    requests 默认读 Windows 注册表里的系统代理（trust_env）。现场那台机器的代理
+    可能早已失效（曾记录过 127.0.0.1:65532），走代理时 POST 到节点会直接失败，
+    而 curl 联调没有这个问题 —— 所以这里显式建一个 trust_env=False 的会话。
+    """
+    if requests is None:
+        return None
+    sess = requests.Session()
+    sess.trust_env = False
+    return sess
+
+
 class SprayController:
     """喷淋控制器：按风险等级/手动触发下发指令，支持 serial / http / mqtt 三种传输。"""
 
@@ -48,7 +62,7 @@ class SprayController:
                  risk_map=None, min_interval=3.0,
                  transport='serial', http_targets=None, http_timeout=1.0,
                  mqtt=None, max_duration=30, default_protocol='json',
-                 direct_max_sec=300, status_timeout=1.5):
+                 direct_max_sec=300, status_timeout=1.5, nodes=None):
         self.enabled = bool(enabled)
         self.serial_port = serial_port
         self.baud = int(baud or 115200)
@@ -102,6 +116,24 @@ class SprayController:
         # 持续模式的兜底计时器：{group: threading.Timer} / {group: 起始时间}
         self._direct_timers = {}
         self._direct_started = {}
+        # 局域网会话（trust_env=False，见 _lan_session）
+        self._http = _lan_session()
+        # 节点探活缓存（/api/spray/status 3 秒内复用，避免页面轮询把节点打满）
+        self._probe_lock = threading.Lock()
+        self._probe_cache = {'ts': 0.0, 'nodes': []}
+        # 节点登记表里的分组（serial/mqtt 形态下唯一能知道"有哪些片区"的地方）
+        self.node_groups = set()
+        self.node_names = {}
+        for n in (nodes or []):
+            try:
+                g = str(n.get('group', '') or '').strip()
+                name = str(n.get('name', '') or '').strip()
+            except AttributeError:
+                continue
+            if g:
+                self.node_groups.add(g)
+                if name:
+                    self.node_names.setdefault(g, name)
 
         if self.enabled:
             self._init_transport()
@@ -153,6 +185,18 @@ class SprayController:
         if self.transport == 'mqtt':
             return bool(self._mqtt)
         return False
+
+    @property
+    def allowed_groups(self):
+        """可下发的分组白名单（聊天/语音指令解析用，跨传输形态）。
+
+        http 直连：http_targets 里的分组；serial/mqtt：只认 nodes 登记表里的分组。
+        'gateway' 是转发通道不算片区；'all' 永远合法。
+        """
+        groups = set(self.http_targets.keys()) | set(self.node_groups)
+        groups.discard('gateway')
+        groups.add('all')
+        return groups
 
     # ==================== 目标寻址 ====================
 
@@ -214,7 +258,7 @@ class SprayController:
         if requests is None:
             return None, 'requests 未安装'
         try:
-            resp = requests.get(url, timeout=float(timeout or self.http_timeout))
+            resp = (self._http or requests).get(url, timeout=float(timeout or self.http_timeout))
         except Exception as exc:
             return None, f'{type(exc).__name__}: {exc}'
         raw = resp.content or b''
@@ -257,7 +301,7 @@ class SprayController:
     def _write_json(self, url, command):
         """按项目固件协议 POST /spray，返回 (ok, 错误原因)。"""
         try:
-            resp = requests.post(url, json=command, timeout=self.http_timeout)
+            resp = (self._http or requests).post(url, json=command, timeout=self.http_timeout)
         except Exception as exc:
             return False, f'{type(exc).__name__}: {exc}'
         if 200 <= resp.status_code < 300:
@@ -383,8 +427,14 @@ class SprayController:
 
         group = group_override or mapping.get('group')
         duration = mapping.get('duration', 0)
-        if not group or not duration or int(duration) <= 0:
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
             return False
+        if not group or duration <= 0:
+            return False
+        if duration > self.max_duration:
+            duration = self.max_duration  # 与手动喷淋同一道上限，配置写错也不会长时间喷
 
         # 自动喷淋节流：按分组独立计时，避免多片区互相压制
         now = time.time()
@@ -392,13 +442,14 @@ class SprayController:
             return False
         self._last_auto_spray[group] = now
 
-        self._send_async({'group': group, 'duration': int(duration)})
+        self._send_async({'group': group, 'duration': duration})
         return True
 
     def manual_spray(self, group='all', duration=2):
         """手动喷淋（Client 按钮），不受自动节流限制。
 
         group: 'all' / 'g1' / 'g2' ...（对应片区A/片区B）；duration: 秒。
+        非数字或 <=0 一律拒绝（调用方传 0 的语义是"别喷"，绝不能默认执行）。
         mist 协议下等价于 ``GET /start?time=duration``。
         """
         if not self.enabled or not self.available:
@@ -407,9 +458,9 @@ class SprayController:
         try:
             duration = int(duration)
         except (TypeError, ValueError):
-            duration = 2
+            return False
         if duration <= 0:
-            duration = 2
+            return False
         if duration > self.max_duration:
             duration = self.max_duration  # 安全上限，避免误触长时间喷水
         self._send_async({'group': group, 'duration': duration})
@@ -419,8 +470,9 @@ class SprayController:
         """立即停止该分组的喷洒（异步下发，只保证"已发出"）。
 
         mist 协议走 GET /stop，json 协议走 POST /stop；
-        串口/MQTT 没有独立 stop 指令：发 duration=1 让节点立即进入结束流程。
-        手机页要"真结果"时用 mist_stop()（同步、带回读到的错误原因）。
+        串口/MQTT 没有独立 stop 指令：发 duration=0 让节点立即停止
+        （固件把 duration<=0 解释为 relay.stop()；发 1 是"再喷 1 秒"，语义反了）。
+        手机页要"真结果"时用 mist_stop()/stop_detail()（同步、带回读到的错误原因）。
         """
         if not self.enabled or not self.available:
             return False
@@ -431,7 +483,7 @@ class SprayController:
                 return False
             threading.Thread(target=self._stop_now, args=(group,), daemon=True).start()
             return True
-        self._send_async({'group': group, 'duration': 1})
+        self._send_async({'group': group, 'duration': 0})
         return True
 
     def _stop_now(self, group='all'):
@@ -447,8 +499,8 @@ class SprayController:
                 good, err = self._write_mist(url, {'group': g, 'action': 'stop'})
             else:
                 try:
-                    resp = requests.post(self._stop_url(url), json={'group': g},
-                                         timeout=self.http_timeout)
+                    resp = (self._http or requests).post(self._stop_url(url), json={'group': g},
+                                                         timeout=self.http_timeout)
                     good = 200 <= resp.status_code < 300
                     err = '' if good else f'HTTP {resp.status_code}'
                 except Exception as exc:
@@ -457,6 +509,90 @@ class SprayController:
             if not good and err:
                 errs.append(f'{g}: {err}')
         return ok, '; '.join(errs)
+
+    def stop_detail(self, group='all'):
+        """同步停止并返回 (是否送达, 失败原因)——网页/手机要"真结果"时用这个。"""
+        if not self.enabled or not self.available:
+            return False, '喷淋链路未配置'
+        group = group or 'all'
+        self._cancel_direct_timer(group)
+        if self.transport == 'http':
+            return self._stop_now(group)
+        # 串口/MQTT 协议：duration<=0 就是"立即停止"（绝不能发 1，那是"再喷 1 秒"）
+        return self._write_detail({'group': group, 'duration': 0})
+
+    def manual_spray_detail(self, group='all', duration=2):
+        """手动喷淋并**同步等节点应答**，返回 (ok, 失败原因)。
+
+        以前手动喷淋丢给后台线程就返回 True（"假成功"）；现场看页面提示成功、
+        节点其实没动。现在把节点应答作为成功的唯一依据，失败原因原样回给页面。
+        """
+        if not self.enabled or not self.available:
+            return False, '喷淋链路未配置'
+        group = group or 'all'
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            return False, '时长必须是整数秒'
+        if duration <= 0:
+            return False, '时长必须为正数'
+        if duration > self.max_duration:
+            duration = self.max_duration  # 安全上限，避免误触长时间喷水
+        return self._write_detail({'group': group, 'duration': duration})
+
+    # ==================== 节点探活（/api/spray/status 用） ====================
+
+    def probe_nodes(self, timeout=0.8, max_age=3.0):
+        """并发探测每个 http 节点的 GET /status，带短缓存。
+
+        返回 [{group, name, url, online, latency_ms, ip, rssi, spraying, count, error}]。
+        非 http 传输返回空表（串口/MQTT 没有逐节点探活的通道）。
+        mist 节点（手写 sketch）的 /status 是 HTML 状态页：能连通即 online，
+        字段解析不到就留空，不影响"在线"判断。
+        """
+        if self.transport != 'http' or self._http is None or not self.http_targets:
+            return []
+        with self._probe_lock:
+            if time.time() - self._probe_cache['ts'] < max_age:
+                return [dict(n) for n in self._probe_cache['nodes']]
+        items = list(self.http_targets.items())
+        out = [None] * len(items)
+
+        def _one(i, group, url):
+            base = self._base_url(url)
+            row = {'group': group, 'name': self.node_names.get(group, ''), 'url': url,
+                   'online': False, 'latency_ms': None}
+            t0 = time.time()
+            try:
+                resp = (self._http or requests).get(base + '/status', timeout=timeout)
+                row['latency_ms'] = int((time.time() - t0) * 1000)
+                row['online'] = 200 <= resp.status_code < 300
+                try:
+                    data = resp.json()
+                except ValueError:
+                    data = {}
+                if isinstance(data, dict):
+                    for k in ('ip', 'rssi', 'spraying', 'count'):
+                        if k in data:
+                            row[k] = data[k]
+                    if data.get('name') and not row['name']:
+                        row['name'] = str(data['name'])
+                if not row['online']:
+                    row['error'] = f'返回 {resp.status_code}'
+            except Exception as exc:
+                row['error'] = f'{type(exc).__name__}: {exc}'
+            out[i] = row
+
+        threads = [threading.Thread(target=_one, args=(i, g, u), daemon=True)
+                   for i, (g, u) in enumerate(items)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout + 0.5)
+        nodes = [n for n in out if n]
+        with self._probe_lock:
+            self._probe_cache = {'ts': time.time(), 'nodes': nodes}
+        return [dict(n) for n in nodes]
 
     # ==================== 对外接口：mist（手写 sketch）专有动作 ====================
     # 这几个都返回可直接丢给手机页的 dict，且是同步阻塞的（调用方的 FastAPI 端点要

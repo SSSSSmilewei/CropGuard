@@ -7,6 +7,60 @@
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 
+# 整窗样式表：按钮的悬停/按下/禁用态、表格、输入框统一在这里定义。
+# 按钮不再各自内联 background-color（内联样式会盖掉 :hover/:pressed/:disabled，
+# 原来点下去、禁用时外观完全没变化）；特殊按钮用 property "variant" 区分。
+# ⚠️ main.py 的 init_UI_config 会在此基础上追加背景图规则，不要直接覆盖。
+APP_STYLE = """
+* { font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif; }
+QWidget#centralwidget { background-color: #e7eee4; }
+QLabel#label_title { color: #1d3a24; letter-spacing: 1px; }
+QPushButton {
+    background-color: #2f6b3c; color: #ffffff; border: none; border-radius: 9px;
+    padding: 0 8px; font-weight: 600;
+}
+QPushButton:hover { background-color: #3b7f4a; }
+QPushButton:pressed { background-color: #22532d; padding-top: 2px; }
+QPushButton:disabled { background-color: #a7b6a9; color: #f1f4f1; }
+QPushButton[variant="primary"] { background-color: #1f6b35; border-radius: 12px; }
+QPushButton[variant="primary"]:hover { background-color: #278143; }
+QPushButton[variant="muted"] { background-color: #5b6a5e; }
+QPushButton[variant="muted"]:hover { background-color: #6b7b6e; }
+QPushButton[variant="ok"] { background-color: #1e8a4b; }
+QPushButton[variant="ok"]:hover { background-color: #25a058; }
+QPushButton[variant="danger"] { background-color: #b0392f; }
+QPushButton[variant="danger"]:hover { background-color: #c5463b; }
+QLineEdit, QTextEdit, QComboBox {
+    background-color: #ffffff; color: #1d2a20; border: 1px solid #c9d6c6; border-radius: 8px;
+    padding: 3px 8px; selection-background-color: #2f6b3c; selection-color: #ffffff;
+}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus { border: 1px solid #2f6b3c; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView { background: #ffffff; selection-background-color: #d6eadb; selection-color: #1d2a20; }
+QTableWidget {
+    background-color: #ffffff; alternate-background-color: #f3f7f2; color: #1d2a20;
+    gridline-color: #e1e9df; border: 1px solid #cfdacc; border-radius: 10px;
+    selection-background-color: #cfe6d4; selection-color: #12301b;
+}
+QHeaderView::section {
+    background-color: #2f5a37; color: #ffffff; border: none; border-right: 1px solid #3d6b46;
+    padding: 6px 4px; font-weight: 600;
+}
+QTableCornerButton::section { background-color: #2f5a37; border: none; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #b9c8b7; border-radius: 4px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #8fa68c; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+QToolTip { background-color: #1d2a20; color: #ffffff; border: none; padding: 4px 8px; }
+"""
+
+
+# 底部表格列宽：编号/图片/输入时间/识别结果/目标数量/耗时/评判/保存状态（最后一列自动拉伸）
+TABLE_COLUMN_WIDTHS = [50, 150, 150, 250, 70, 70, 90, 80]
+
+
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
@@ -30,7 +84,7 @@ class Ui_MainWindow(object):
 
         # ==================== 左侧控制面板区域 ====================
         self.label_control = QtWidgets.QLabel(self.centralwidget)
-        self.label_control.setGeometry(QtCore.QRect(10, 50, 280, 730))
+        self.label_control.setGeometry(QtCore.QRect(10, 50, 280, 760))
         self.label_control.setObjectName("label_control")
 
         # ---- 源选择按钮区域 ----
@@ -42,7 +96,6 @@ class Ui_MainWindow(object):
         font_btn.setPointSize(10)
         self.pushButton_img.setFont(font_btn)
         self.pushButton_img.setText("打开图片")
-        self.pushButton_img.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_img.setObjectName("pushButton_img")
 
         # 打开文件夹按钮
@@ -50,7 +103,6 @@ class Ui_MainWindow(object):
         self.pushButton_dir.setGeometry(QtCore.QRect(160, 70, 110, 36))
         self.pushButton_dir.setFont(font_btn)
         self.pushButton_dir.setText("打开文件夹")
-        self.pushButton_dir.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_dir.setObjectName("pushButton_dir")
 
         # 打开视频按钮
@@ -58,7 +110,6 @@ class Ui_MainWindow(object):
         self.pushButton_video.setGeometry(QtCore.QRect(30, 120, 110, 36))
         self.pushButton_video.setFont(font_btn)
         self.pushButton_video.setText("打开视频")
-        self.pushButton_video.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_video.setObjectName("pushButton_video")
 
         # 打开摄像头按钮
@@ -66,7 +117,6 @@ class Ui_MainWindow(object):
         self.pushButton_camera.setGeometry(QtCore.QRect(160, 120, 110, 36))
         self.pushButton_camera.setFont(font_btn)
         self.pushButton_camera.setText("打开摄像头")
-        self.pushButton_camera.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_camera.setObjectName("pushButton_camera")
 
         # 开始运行按钮
@@ -78,7 +128,7 @@ class Ui_MainWindow(object):
         font_start.setBold(True)
         self.pushButton_start.setFont(font_start)
         self.pushButton_start.setText("开始运行 >")
-        self.pushButton_start.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 15px;")
+        self.pushButton_start.setProperty("variant", "primary")
         self.pushButton_start.setObjectName("pushButton_start")
 
         # ---- 拍照识别 / 关闭摄像头（手持人工确认场景：拍一张 → 立刻识别）----
@@ -86,14 +136,13 @@ class Ui_MainWindow(object):
         self.pushButton_snap.setGeometry(QtCore.QRect(30, 232, 115, 34))
         self.pushButton_snap.setFont(font_start)
         self.pushButton_snap.setText("📷 拍照识别")
-        self.pushButton_snap.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_snap.setObjectName("pushButton_snap")
 
         self.pushButton_cam_close = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_cam_close.setGeometry(QtCore.QRect(155, 232, 115, 34))
         self.pushButton_cam_close.setFont(font_start)
         self.pushButton_cam_close.setText("⏹ 关闭摄像头")
-        self.pushButton_cam_close.setStyleSheet("background-color: rgb(80,90,80); color: rgb(255,255,255); border-radius: 10px;")
+        self.pushButton_cam_close.setProperty("variant", "muted")
         self.pushButton_cam_close.setObjectName("pushButton_cam_close")
 
         # ---- 路径显示区域 ----
@@ -236,14 +285,12 @@ class Ui_MainWindow(object):
         self.pushButton_save.setGeometry(QtCore.QRect(30, y_btn, 110, 36))
         self.pushButton_save.setFont(font_btn)
         self.pushButton_save.setText("保存结果")
-        self.pushButton_save.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_save.setObjectName("pushButton_save")
 
         self.pushButton_export = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_export.setGeometry(QtCore.QRect(160, y_btn, 110, 36))
         self.pushButton_export.setFont(font_btn)
         self.pushButton_export.setText("导出数据")
-        self.pushButton_export.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_export.setObjectName("pushButton_export")
 
         y_btn += 50
@@ -251,7 +298,6 @@ class Ui_MainWindow(object):
         self.pushButton_advice.setGeometry(QtCore.QRect(30, y_btn, 240, 36))
         self.pushButton_advice.setFont(font_btn)
         self.pushButton_advice.setText("获取防治建议(AI)")
-        self.pushButton_advice.setStyleSheet("background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_advice.setObjectName("pushButton_advice")
 
         # ---- AI建议文本框 ----
@@ -285,8 +331,6 @@ class Ui_MainWindow(object):
         font_chat_btn.setPointSize(9)
         self.pushButton_chat.setFont(font_chat_btn)
         self.pushButton_chat.setText("提问")
-        self.pushButton_chat.setStyleSheet(
-            "background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_chat.setObjectName("pushButton_chat")
 
         # ==================== 右侧主图显示区域 ====================
@@ -375,8 +419,6 @@ class Ui_MainWindow(object):
         self.pushButton_eval_start.setGeometry(QtCore.QRect(970, 316, 290, 34))
         self.pushButton_eval_start.setFont(font_btn)
         self.pushButton_eval_start.setText("↻ 新一轮评测（清空日志）")
-        self.pushButton_eval_start.setStyleSheet(
-            "background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_eval_start.setObjectName("pushButton_eval_start")
 
         # 评委判分：作用于当前回看的那一行
@@ -384,43 +426,44 @@ class Ui_MainWindow(object):
         self.pushButton_verdict_ok.setGeometry(QtCore.QRect(970, 356, 140, 40))
         self.pushButton_verdict_ok.setFont(font_start)
         self.pushButton_verdict_ok.setText("✔ 识别正确")
-        self.pushButton_verdict_ok.setStyleSheet(
-            "background-color: rgb(32,120,60); color: rgb(255,255,255); border-radius: 10px;")
+        self.pushButton_verdict_ok.setProperty("variant", "ok")
         self.pushButton_verdict_ok.setObjectName("pushButton_verdict_ok")
 
         self.pushButton_verdict_bad = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_verdict_bad.setGeometry(QtCore.QRect(1120, 356, 140, 40))
         self.pushButton_verdict_bad.setFont(font_start)
         self.pushButton_verdict_bad.setText("✘ 识别错误")
-        self.pushButton_verdict_bad.setStyleSheet(
-            "background-color: rgb(150,50,50); color: rgb(255,255,255); border-radius: 10px;")
+        self.pushButton_verdict_bad.setProperty("variant", "danger")
         self.pushButton_verdict_bad.setObjectName("pushButton_verdict_bad")
 
         self.pushButton_eval_export = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_eval_export.setGeometry(QtCore.QRect(970, 404, 290, 32))
         self.pushButton_eval_export.setFont(font_btn)
         self.pushButton_eval_export.setText("导出评分报告")
-        self.pushButton_eval_export.setStyleSheet(
-            "background-color: rgb(48,77,49); color: rgb(255,255,255); border-radius: 10px;")
         self.pushButton_eval_export.setObjectName("pushButton_eval_export")
 
         # ==================== 底部结果表格 ====================
         # ⚠️ 这张表只记"样本"（拍照识别 / 打开图片 / 打开文件夹），实时检测不写。
         self.tableWidget_info = QtWidgets.QTableWidget(self.centralwidget)
-        self.tableWidget_info.setGeometry(QtCore.QRect(300, 520, 960, 260))
+        self.tableWidget_info.setGeometry(QtCore.QRect(300, 520, 960, 290))
         self.tableWidget_info.setColumnCount(8)
         self.tableWidget_info.setHorizontalHeaderLabels([
             "编号", "图片", "输入时间", "识别结果", "目标数量", "耗时", "评判", "保存状态"
         ])
-        # 设置列宽（合计 765 < 960，给「评判」列腾出位置）
-        column_widths = [45, 150, 115, 165, 65, 60, 80, 85]
-        for i, w in enumerate(column_widths):
+        # 设置列宽（合计 ≈ 940 ≤ 960；最后一列自动拉伸）
+        for i, w in enumerate(TABLE_COLUMN_WIDTHS):
             self.tableWidget_info.setColumnWidth(i, w)
         self.tableWidget_info.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.tableWidget_info.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.tableWidget_info.setAlternatingRowColors(True)
+        # 第 0 列就是"编号"，行号表头重复且挤占宽度；最后一列拉伸填满，避免右侧被截断
+        self.tableWidget_info.verticalHeader().setVisible(False)
+        self.tableWidget_info.verticalHeader().setDefaultSectionSize(34)
+        self.tableWidget_info.horizontalHeader().setStretchLastSection(True)
+        self.tableWidget_info.setWordWrap(False)
         self.tableWidget_info.setObjectName("tableWidget_info")
 
         MainWindow.setCentralWidget(self.centralwidget)
+        MainWindow.setStyleSheet(APP_STYLE)
 
         QtCore.QMetaObject.connectSlotsByName(MainWindow)

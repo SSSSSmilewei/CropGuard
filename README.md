@@ -6,6 +6,22 @@
 > 🆕 **第一次接手这个项目？先看 [新手使用指南.md](新手使用指南.md)** —— 从装环境到手机连上去，一步步照着敲。
 > 🖱️ **不想用命令行？看 [PyCharm运行指南.md](PyCharm运行指南.md)** —— 项目已内置 6 个一键运行配置，点鼠标就行。
 
+---
+
+## 0. 整合版速览（2026-10-21）
+
+当前 `main` 已把三条线合成一个可现场演示的版本：
+
+| 来源 | 贡献 | 落点 |
+| --- | --- | --- |
+| 主线 | 手机端 http/https 合一、离线看板、mist 雾化、相机看门狗、语音多后端、RAG 防幻觉 | `serve/mobile.py`、`serve/pages/dashboard.html`、`feedback/spray.py`、`tool/camera_source.py` |
+| 前端（PR#1） | Vue 3 单页前端（检测台/实时/问答/喷淋/设备/看板），喷淋同步等应答、流推原始帧、上下文隔离 | `web/`（dist 随仓库）、`serve/spa.py` |
+| EdgeJev（PR#3） | 本地类型化决策（规则优先 + 高置信兜底）、现场测评页、评分口径统一 | `edgejev/`、`app/edge_engine.py`、`/edge`、`/eval` |
+
+**页面入口**：`/` 检测台 · `/stream` 实时 · `/ask` 问答 · `/spray` 喷淋 · `/system` 设备/二维码 ·
+`/dashboard` 数据看板（`/dashboard-offline` 离线单文件） · `/m` 手机端 · `/eval` 测评 · `/edge` EdgeJev · `/classic` 旧首页兜底。
+
+**比赛演示流程**：见 [docs/国赛最终演示流程.md](docs/国赛最终演示流程.md)（含 8/12/18 分钟三条路线、翻车处置、无硬件兜底）。
 
 ---
 

@@ -57,7 +57,7 @@ UI:
     # 表头背景
     header_background_color: "48,77,49"
     # 表头字体
-    header_color: "112,63,46"
+    header_color: "255,255,255"
     # 表格背景
     background_color: "197,190,172"
     # 滑过背景
@@ -474,7 +474,9 @@ EDGE:
   #   auto  = 先试进程内直调（最快），失败再试本地 HTTP 服务
   #   local = 只用进程内直调（需要本目录自带 edgejev 包 + onnxruntime/tokenizers）
   #   http  = 只连 edgejev serve 起的本地服务（独立进程/独立 venv 部署时用）
-  mode: 'auto'
+  # ⚠️ 现场默认 local：没拷模型时**毫秒级**失败并退避，不会在第一条语音指令上
+  #    白等 5 秒 HTTP 超时。要用 edgejev serve 独立进程时再改成 auto / http。
+  mode: 'local'
   # mode=http 时连的本地服务地址（edgejev serve --model ./edge_models/jev-int8 --port 8009）
   base_url: 'http://127.0.0.1:8009'
   # 服务端设了 --api-key 时在此填同样的 key（本地进程间一般留空）
@@ -492,7 +494,8 @@ EDGE:
 # ==================== 手机端 ====================
 PHONE:
   # HTTPS 端口（getUserMedia 取手机摄像头必须是安全上下文）
-  # 用 --https 启动时 HTTP(8080) 与 HTTPS(8443) 会同时监听
+  # 默认启动即同时监听 HTTP(8080) 与 HTTPS(8443)；启动时打印的手机入口为 https。
+  # 想只跑 HTTP：python api_server.py --no-https
   https_port: 8443
   cert_dir: './config/certs'
   # 手机实时模式：每隔多久抓一帧上传（毫秒）；越小越流畅、越吃带宽

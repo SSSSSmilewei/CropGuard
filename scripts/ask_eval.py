@@ -26,6 +26,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from llm import ai_gateway, guard            # noqa: E402
+from llm.retriever import gate_score         # noqa: E402
 from llm.retriever import Retriever          # noqa: E402
 
 # ---------------- 内置题库：库内问题（问 -> 期望召回的害虫） ----------------
@@ -79,7 +80,8 @@ def eval_retrieval(retriever, threshold):
     ok_hit = 0
     for q, pest in IN_DOMAIN:
         res = retriever.search(q)
-        top = res[0]['score'] if res else 0.0
+        # 闸门判据是 gate_score（见 retriever.gate_score），评测口径必须与 ai_gateway._retrieve 一致
+        top = gate_score(res)
         hit = (top >= threshold) and any(c['pest'] == pest for c in res)
         ok_hit += 1 if hit else 0
         if not hit:
@@ -87,9 +89,20 @@ def eval_retrieval(retriever, threshold):
                   f'实际={[c["pest"] for c in res][:3]}')
 
     ok_refuse = 0
+    # 附加一组"带检测上下文的库外题"：这是真实使用形态（界面有检测结果时提问），
+    # 旧实现加权分数会抬过阈值导致误召回，必须一并测住
+    # 上下文用知识库里真实存在的害虫 key（写成不存在的 key 等于没加上下文，测不出洞）
+    OUT_DOMAIN_WITH_CTX = [(q, ['aphids']) for q in OUT_DOMAIN]
+    for q, ctx in OUT_DOMAIN_WITH_CTX:
+        res = retriever.search(q, context_pests=ctx)
+        top = gate_score(res)
+        good = top < threshold
+        ok_refuse += 1 if good else 0
+        if not good:
+            print(f'  [误召·带上下文] {q}  top={top:.3f}')
     for q in OUT_DOMAIN:
         res = retriever.search(q)
-        top = res[0]['score'] if res else 0.0
+        top = gate_score(res)
         good = top < threshold
         ok_refuse += 1 if good else 0
         if not good:
@@ -103,7 +116,8 @@ def eval_retrieval(retriever, threshold):
         if not good:
             print(f'  [漏拦] {text} -> {r}')
 
-    n1, n2, n3 = len(IN_DOMAIN), len(OUT_DOMAIN), len(UNSAFE)
+    # 库外题测两遍：不带上下文 + 带检测上下文（真实使用形态），分母乘 2
+    n1, n2, n3 = len(IN_DOMAIN), len(OUT_DOMAIN) * 2, len(UNSAFE)
     return {
         'in_domain_total': n1, 'in_domain_hit': ok_hit,
         'in_domain_rate': round(ok_hit / n1, 4),

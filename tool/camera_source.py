@@ -58,6 +58,24 @@ def _release_cap(cap):
         pass
 
 
+def _release_after(cap, thread, timeout=3.0):
+    """等占用该句柄的读取线程退出后再 release。
+
+    ⚠️ 不能在别的线程还卡在 `cap.read()` 时 release 同一个句柄：
+    OpenCV 的 VideoCapture 不是线程安全的，DSHOW/MSMF 下会直接段错误（整个进程闪退）。
+    读取线程迟迟不退（驱动卡死）就宁可泄漏这个句柄，也不冒崩溃的险。
+    """
+    def _job():
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+            if thread.is_alive():
+                _log(f'读取线程 {thread.name} 未在 {timeout:.0f}s 内退出，'
+                     f'放弃释放旧句柄（避免跨线程 release 段错误）')
+                return
+        _release_cap(cap)
+    threading.Thread(target=_job, name='CamRelease', daemon=True).start()
+
+
 def _backend_candidates(prefer='auto'):
     """按优先级返回 (名称, cv2 flag) 列表。非 Windows 只返回默认后端。"""
     if os.name == 'nt':
@@ -165,6 +183,7 @@ class CameraSource:
 
         self._reader = None
         self._reader_gen = 0                 # 换代计数：旧线程靠它自行退出
+        self._swap_lock = threading.Lock()   # 看门狗 / 手动 restart 不能同时换句柄
         self._stop = threading.Event()
         self._watchdog = None
         self._state = STATE_DEAD
@@ -214,13 +233,24 @@ class CameraSource:
             self._last_error = f'{backend_name or self.backend}: 打开后读不到帧'
             _release_cap(cap)
 
-        # 2) 多策略解析（换 FOURCC / 扫其它索引 / 按设备名）
+        # 2) 文件 / URL / 图片序列打不开就是打不开：**绝不能**退化成扫索引 ——
+        #    那会静默打开笔记本内置摄像头（测试机上实测：RTSP 地址写错 → 打开了 index 0）。
+        if not isinstance(self.source, int):
+            self._resolve_report = {
+                'tried': [f'source={self.source!r} → 打不开/无帧'],
+                'opened': None,
+                'capture': '文件/流地址打不开，已停止（不会改用其它相机）',
+            }
+            self._last_error = (self._last_error or
+                                f'无法打开 {self.source!r}（文件不存在 / 流地址不可达 / 格式不支持）')
+            return None, None
+
+        # 3) 多策略解析（换 FOURCC / 扫其它索引 / 按设备名）——只对数字索引做
         _log(f'{self.name}: 常规打开失败，进入多策略解析…')
         cap, report = resolve_camera(
             preferred_index=self.source if isinstance(self.source, int) else None,
             width=self.width, height=self.height, fourcc=self.fourcc,
             max_index=int(os.environ.get('CROPGuard_CAM_MAX_INDEX', '6') or 6),
-            extra_indices=[self.source] if not isinstance(self.source, int) else (),
             verbose=True)
         self._resolve_report = report
         if cap is not None:
@@ -309,6 +339,8 @@ class CameraSource:
             with self._cap_lock:
                 cap = self._cap
             if cap is None:
+                if self._reader_gen != gen:
+                    break
                 time.sleep(0.1)
                 continue
             try:
@@ -383,29 +415,39 @@ class CameraSource:
                 self._hard_reopen()
 
     def _swap_capture(self):
-        cap, _ = self._open_best()
-        self._last_swap_ts = time.time()
-        if cap is None:
-            self._state = STATE_DOWN
-            return
-        old = None
-        with self._cap_lock:
-            old = self._cap
-            self._cap = cap
-        self._state = STATE_OK
-        # 旧句柄丢给后台释放：句柄卡死时也不会拖住任何一个循环
-        if old is not None:
-            threading.Thread(target=_release_cap, args=(old,), daemon=True).start()
-        self._spawn_reader()      # 换了 cap，旧读取线程靠 generation 自行退出
+        with self._swap_lock:
+            if self._stop.is_set():
+                return
+            cap, _ = self._open_best()
+            self._last_swap_ts = time.time()
+            if cap is None:
+                self._state = STATE_DOWN
+                return
+            with self._cap_lock:
+                old, self._cap = self._cap, cap
+            old_reader = self._reader
+            self._state = STATE_OK
+            self._spawn_reader()      # 换了 cap，旧读取线程靠 generation 自行退出
+            # 旧句柄等旧读取线程退出后再在后台释放：句柄卡死也不会拖住任何循环
+            if old is not None:
+                _release_after(old, old_reader)
 
     def _hard_reopen(self):
-        def _job():
+        """连续软重开都救不回来：把当前句柄摘下来，等读取线程退出后真正释放。
+
+        旧实现直接 release 正在被读取线程使用的句柄（还留在 self._cap 上继续被读），
+        是跨线程 release 段错误的高危点。现在先摘句柄 + 让读取线程换代退出，再释放；
+        下一轮看门狗会重新打开。
+        """
+        with self._swap_lock:
             with self._cap_lock:
-                cap = self._cap
-            if cap is not None:
-                _release_cap(cap)
+                cap, self._cap = self._cap, None
+            old_reader = self._reader
+            self._reader_gen += 1          # 让读取线程自行退出
+            self._reader = None
             self._hard_reopens += 1
-        threading.Thread(target=_job, name=f'CamHardReopen-{self.name}', daemon=True).start()
+        if cap is not None:
+            _release_after(cap, old_reader)
 
     # ------------------------------------------------------------ 对外读取
     def read(self, copy=True):
@@ -473,15 +515,20 @@ class CameraSource:
     def close(self):
         self._stop.set()
         self._reader_gen += 1
+        reader = self._reader
         for th in (self._reader, self._watchdog):
             if th is not None and th.is_alive():
                 th.join(timeout=1.0)
         self._reader = None
         self._watchdog = None
-        with self._cap_lock:
-            cap, self._cap = self._cap, None
+        with self._swap_lock:
+            with self._cap_lock:
+                cap, self._cap = self._cap, None
         if cap is not None:
-            _release_cap(cap)
+            if reader is not None and reader.is_alive():
+                _release_after(cap, reader)      # 读取线程还卡在 read()：后台等它退出再放
+            else:
+                _release_cap(cap)
         with self._frame_lock:
             self._frame = None
         self._state = STATE_DEAD
@@ -490,6 +537,9 @@ class CameraSource:
 # ================================================================ 单例池
 _pool = {}
 _pool_lock = threading.Lock()
+# 每个 key 一把"打开锁"：打开设备可能要好几秒，绝不能拿着全局 _pool_lock 去开 ——
+# 那样 A 区相机冷启动时，B 区、/api/camera/health 全都会被卡住。
+_open_locks = {}
 
 
 # ---------------------------------------------------------------- 多策略解析
@@ -673,18 +723,23 @@ def get_source(key, source=0, retry_dead=True, **kwargs):
     （现场表现就是"日志说打开了、但一直没画面"）。
     """
     with _pool_lock:
-        src = _pool.get(key)
-        if src is None:
-            src = CameraSource(source, **kwargs)
-            src._refcount = 0
+        open_lock = _open_locks.setdefault(key, threading.Lock())
+    with open_lock:                       # 同一 key 串行打开；不同 key 互不阻塞
+        with _pool_lock:
+            src = _pool.get(key)
+            fresh = src is None
+            if fresh:
+                src = CameraSource(source, **kwargs)
+                src._refcount = 0
+                _pool[key] = src
+            src._refcount += 1            # 先占住引用：打开期间别人 release 不会把它关掉
+        if fresh:
             src.start()
-            _pool[key] = src
         else:
             st = src.state()
             if retry_dead and (not st.get('opened_once') or st.get('state') == STATE_DEAD):
                 _log(f'{key}: 池中对象处于 {st.get("state")}，重新尝试打开设备')
                 src.start()
-        src._refcount += 1
         return src
 
 
