@@ -18,6 +18,8 @@ pictures20/
 selected_real_scenes/
 # 真实样本测试集：只提交脚本与 README 里的口径，图片（1.1MB, 20 张）不入库，可用 pick_real_testset.py 重建
 real_testset20/
+# 到货标本的实拍图（按采购单编号 01.jpg…）：图片不入库；采购单 docs/specimens_plan.csv 入库
+specimens/
 
 # --- 竞赛材料（PPT/规则文档，不公开）---
 睿抗国赛项目—农智云/

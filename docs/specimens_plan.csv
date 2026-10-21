@@ -1,0 +1,27 @@
+slot,class_cn,class_en,stage,form,tier,note
+1,蝼蛄,mole_cricket,成虫,大号 35–45mm 深褐 前足铲状完整,primary,
+2,蝼蛄,mole_cricket,成虫,中号 约30mm 褐色,primary,
+3,蝼蛄,mole_cricket,成虫,小号 22–28mm 黄褐,primary,
+4,蛴螬,grub,幼虫,铜绿丽金龟幼虫 乳白胖 C形强弯 头壳棕红,primary,务必是幼虫不要成虫
+5,蛴螬,grub,幼虫,暗黑鳃金龟幼虫 偏黄瘦 C形弱弯 头壳深褐,primary,务必是幼虫不要成虫
+6,蛴螬,grub,幼虫,任一金龟科幼虫 中号 体节皱纹清晰,primary,活体或浸制 不针插
+7,斑衣蜡蝉,Lycorma_delicatula,成虫,大 20mm 前翅灰底黑斑 后翅红黑可见,primary,
+8,斑衣蜡蝉,Lycorma_delicatula,成虫,小 15mm 体色偏深,primary,
+9,水稻卷叶螟,rice_leaf_roller,成虫,展翅 黄褐带纵纹,primary,必须稻纵卷叶螟 不要玉米螟
+10,水稻卷叶螟,rice_leaf_roller,成虫,合翅 自然停歇状,primary,
+11,葡萄天蛾,Ampelophaga,成虫,展翅 翅展≥60mm,primary,必须葡萄天蛾 不要豆天蛾
+12,葡萄天蛾,Ampelophaga,成虫,合翅或半展 浅褐型,primary,
+13,金针虫,wireworm,幼虫,沟金针虫幼虫 深褐 约20mm 体节清晰,primary,务必是幼虫不要叩头虫成虫
+14,金针虫,wireworm,幼虫,细胸金针虫幼虫 橙黄 约15mm,primary,不要黄粉虫冒充
+15,叶蝉科,Cicadellidae,成虫,黑尾叶蝉 褐绿型,primary,不许用大青叶蝉
+16,叶蝉科,Cicadellidae,成虫,二点叶蝉类 绿型,primary,不许用大青叶蝉
+17,黑切叶虫,black_cutworm,成虫,小地老虎成虫 展翅 深灰褐 肾形斑清晰,primary,
+18,黑切叶虫,black_cutworm,成虫,小地老虎成虫 合翅 翅纹完整,primary,
+19,跳甲,flea_beetle,成虫,黄曲条跳甲 黄条纹 2–3mm 微针粘卡,primary,可替换位
+20,绿蝉,Cicadella_viridis,成虫,大青叶蝉 亮绿 7–9mm,primary,可替换位
+21,蝼蛄,mole_cricket,成虫,备用换货位 同1-3任一形态,spare,同类别换货
+22,蛴螬,grub,幼虫,备用换货位 同4-6任一形态,spare,同类别换货
+23,斑衣蜡蝉,Lycorma_delicatula,成虫,备用换货位 同7-8,spare,同类别换货
+24,金针虫,wireworm,幼虫,备用换货位 同13-14,spare,同类别换货
+25,玉米螟,corn_borer,成虫,展翅 翅纹清晰,spare,仅备用 与稻纵卷叶螟同科易混
+26,蚜虫,aphids,活体,带活蚜嫩叶 无翅型为主,spare,兼做真实带虫叶片展示
