@@ -29,9 +29,9 @@ UI:
   # 主图
   zhutu2: './icon/zhutu2.png'
   # 最上方的名称
-  title: '农作物害虫智能检测识别与大模型防控决策系统'
+  title: '株得CropGuard · 农作物虫害个体化识别与精准减药决策实施系统'
   # 名称
-  label_title: '农作物害虫智能检测识别与大模型防控决策系统'
+  label_title: '株得CropGuard · 个体化识别与精准减药决策系统'
   # 开始识别按钮背景颜色
   start_button_bg: "48,77,49"
   # 开始识别按钮字体颜色

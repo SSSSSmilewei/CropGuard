@@ -31,7 +31,7 @@ const status = computed(() => {
   if (!state.health) return { tone: '', text: '正在连接…' }
   return { tone: 'ok', text: `已连接 ${location.hostname}` }
 })
-const TITLES: Record<Tab, string> = { detect: '农智云', chat: '农技问答', spray: '喷洒控制', hist: '联动记录' }
+const TITLES: Record<Tab, string> = { detect: '株得', chat: '农技问答', spray: '喷洒控制', hist: '联动记录' }
 </script>
 
 <template>

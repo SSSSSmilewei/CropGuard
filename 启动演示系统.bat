@@ -4,7 +4,7 @@ title CropGuard 演示系统启动器
 cd /d "%~dp0"
 
 echo ============================================
-echo    CropGuard 农智云 - 演示系统
+echo    株得CropGuard - 演示系统
 echo ============================================
 echo.
 

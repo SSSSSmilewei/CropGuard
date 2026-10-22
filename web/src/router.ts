@@ -16,5 +16,5 @@ export const router = createRouter({
 })
 
 router.afterEach((to) => {
-  document.title = `${to.meta.title || '农智云'} · 农智云`
+  document.title = `${to.meta.title || '株得CropGuard'} · 株得CropGuard`
 })

@@ -9,7 +9,7 @@
 @font-face { font-family: "CG Smiley"; src: url("../assets/fonts/smiley-sans.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 
 /*
- * 农智云 · 视觉基调
+ * 株得 · 视觉基调
  * 布局：植保站"标本台"——浅灰绿底板如同标本衬板，检测结果以标本签呈现；
  *       数字用窄体（仪表读数感），数据用等宽体，中文用系统黑体（离线、不打包中文字体）。
  * 主色：田野深绿（操作）；稻穗金（检测框、选中）。风险色是语义色，不当主色用。

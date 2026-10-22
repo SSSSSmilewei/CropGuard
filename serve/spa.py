@@ -19,7 +19,7 @@ ASSETS = os.path.join(DIST, 'assets')
 #    离线快照看板（serve/pages/dashboard.html）保留为"断网/双击打开"的兜底页。
 ROUTES = ('/', '/stream', '/ask', '/spray', '/system', '/dashboard')
 
-_MISSING = """<!doctype html><meta charset="utf-8"><title>农智云</title>
+_MISSING = """<!doctype html><meta charset="utf-8"><title>株得CropGuard</title>
 <body style="font:15px/1.7 system-ui,'Microsoft YaHei',sans-serif;max-width:640px;margin:48px auto;padding:0 16px">
 <h1 style="font-size:20px">前端页面还没有构建</h1>
 <p>找不到 <code>web/dist/index.html</code>。在项目根目录执行：</p>

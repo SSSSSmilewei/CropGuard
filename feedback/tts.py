@@ -426,7 +426,7 @@ class TTSEngine:
 
 
 # ---------------------------------------------------------------- 自检
-def selftest(engine='auto', phrase='语音播报自检，农智云已就绪'):
+def selftest(engine='auto', phrase='语音播报自检，株得已就绪'):
     """跑一次自检：建引擎 → 念一句 → 返回 (ok, status)。
 
     给 `api_server.py` / `main.py` 启动日志用：现场一眼就能看到"到底响不响"。

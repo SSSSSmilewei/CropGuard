@@ -59,7 +59,7 @@ def content_slide(title, bullets):
 
 # ============ 19 SLIDES ============
 
-title_slide('农智云', '基于YOLOv8的农作物病虫害智能诊断系统\n\n深空视界队 · 2026睿抗机器人大赛')
+title_slide('株得CropGuard', '农作物虫害个体化识别与精准减药决策实施系统\n\n深空视界队 · 2026睿抗机器人大赛')
 
 content_slide('目录', [
     ('01  项目背景与痛点分析', 0),
@@ -294,10 +294,10 @@ content_slide('16 应用前景', [
     ('愿景：让每一片农田都有 AI 守护', 0),
 ])
 
-title_slide('感谢聆听', '农智云 — 让每一片农田都有 AI 守护\n\n深空视界队')
+title_slide('感谢聆听', '株得 — 让每一片农田都有 AI 守护\n\n深空视界队')
 
 # Save
-out = 'D:/Dev Projects/Pycharm/yolov8/农智云_省赛PPT.pptx'
+out = 'D:/Dev Projects/Pycharm/yolov8/株得_省赛PPT.pptx'
 prs.save(out)
 print(f'✅ PPT已生成: {out}')
 print(f'共 {len(prs.slides)} 页')

@@ -16,6 +16,11 @@ edgejev.json    # 后端/精度/温度/特殊 token 等配置（Agent 由此识�
 构建：`python scripts/build_edge_model.py`（见 [docs/edgejev.md](../docs/edgejev.md)）。
 运行时只需要 `onnxruntime + tokenizers + numpy`，不需要 torch。
 
+> **2026-10-23 本机（演示机）已构建并部署**：`jev-int8/` 369MB，官方示例
+> `dept=billing 0.993`、单句 77ms，`GET /api/edge/status` → `available=true, mode=local`。
+> 构建时踩到 5 个环境坑（uv/HF 缓存目录、Windows 软链、tempfile 目录、GBK stdout），
+> 已在 `CLAUDE.md` 记录；换机重跑前先看那一节。
+
 ---
 
 ## 实测校准记录（2026-10-16，本机 CPU，用于 app/edge_engine.py 的阈值）

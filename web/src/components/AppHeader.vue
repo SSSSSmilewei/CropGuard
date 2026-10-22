@@ -38,9 +38,9 @@ const voice = computed(() => {
 
 <template>
   <header class="header">
-    <RouterLink to="/" class="brand" aria-label="农智云 首页">
+    <RouterLink to="/" class="brand" aria-label="株得 首页">
       <BrandMark />
-      <span class="name">农智云</span>
+      <span class="name">株得</span>
       <span class="en">CROPGUARD</span>
     </RouterLink>
     <nav class="nav" aria-label="主导航">

@@ -83,7 +83,7 @@ print(f"[INFO] TTS engine={feedback.status()['tts'].get('engine')} "
 if bool(cfg_feedback.get('tts_selftest', False)):
     # 启动念一句：现场一眼就能确认"到底响不响"（不响则日志给出后端与错误原因）
     if TTSEngine.wait_backend(_tts_engine, timeout=5.0):
-        _tts_engine.speak('语音播报自检，农智云已就绪', flush=True)
+        _tts_engine.speak('语音播报自检，株得已就绪', flush=True)
 
 cfg_spray = config.get('SPRAY', {}) or {}
 spray = SprayController(

@@ -1,4 +1,4 @@
-# CropGuard 农智云 · 害虫检测与联动处置系统（整合版）
+# 株得CropGuard · 农作物虫害个体化识别与精准减药决策实施系统（整合版）
 
 > 2026-10-21 整合：本仓库 = 主线最新（手机端 http/https 合一、离线看板、mist 雾化、相机看门狗）
 > **+ 学弟 PR#1（Vue 3 前端 + 喷淋/流修复）+ 队友 PR#3（EdgeJev 本地决策 + 测评页）**。
@@ -80,7 +80,7 @@ python main.py                                           # PyQt5 GUI（指挥台
 
 ## 训练与模型
 - 权重：`runs/train/pest27_final4/weights/best.pt`（mAP50 0.7601 / mAP50-95 0.4899，27 类）
-- 平台 ONNX：`睿抗国赛项目—农智云/best.onnx`（640；只传这个，480 会失败）
+- 平台 ONNX：`睿抗国赛项目—株得/best.onnx`（640；只传这个，480 会失败）
 - 数据集：`dataset_full/`（11,948 训练 / 2,046 验证）；遗留 `dataset_102/` 停用保留
 - 8 类 mAP50≥95%：斑衣蜡蝉 .995 / 蝼蛄 .9946 / 叶蝉科 .9856 / 水稻卷叶螟 .9842 /
   光肩星天牛 .9803 / 跳甲 .9715 / 蛴螬 .9627 / 葡萄天蛾 .9506
@@ -100,11 +100,22 @@ python main.py                                           # PyQt5 GUI（指挥台
 - 标本采购：`docs/真实昆虫采购单.md` + `docs/specimens_plan.csv`；验收 `scripts/screen_specimens.py`
 - ⚠️ 标签噪声：蝗虫（mAP50 .66，图错标成盲蝽）、光肩星天牛（标签可疑）——别拿去现场凑数
 
-## EdgeJev（队友 PR#3）
+## EdgeJev（队友 PR#3 · 本机已部署）
 - 包：`edgejev/`（Apache-2.0，上游 yzfly/edgejev）；适配层 `app/edge_engine.py`；文档 `docs/edgejev.md`
-- 模型：`edge_models/jev-int8/`（335MB，**不入 git**，需从队友机器拷 3 个文件或联网构建一次）
-- 缺模型时：`/api/edge/status` 如实 `available=false + hint`；`ask_command` 自动回规则；不崩
-- 口径：零样本弱（intent 8–10/13），**只演固定 3 条**（"把泵关了吧"/"给片区A喷3秒"/"一直喷不要停"）
+- 模型：`edge_models/jev-int8/`（**本机已构建，369MB**：`model.onnx` 335MB + `tokenizer.json` + `edgejev.json`；
+  **不入 git**，换机要重跑 `scripts/build_edge_model.py` 或整目录拷贝）
+- 构建记录（2026-10-23 本机，int8）：官方示例 `dept=billing 0.993`、单句 77ms；验证通过。
+  构建踩过的坑（换机重跑必看）：
+  1. `uv` 缓存默认在 `C:\Users\HP\AppData\Local\uv` → 沙箱/权限拒绝，必须 `UV_CACHE_DIR` 指到工作区；
+  2. HF 缓存默认 `C:\Users\HP\.cache\huggingface` 同样被拒 → `HF_HOME`/`HF_HUB_CACHE` 指到工作区；
+  3. Windows 无软链权限：`huggingface_hub._create_symlink` 抛 WinError 1314 →
+     构建 venv 里已把 `are_symlinks_supported()` 固定 False，并 `except OSError` 兜底（只影响构建环境）；
+  4. `tempfile.mkdtemp()` 建的目录在本机沙箱下不可写，onnxruntime 量化会崩 →
+     `.edge-build-venv/.../sitecustomize.py` 已把 `mkdtemp` 换成 `os.makedirs` 实现；
+  5. 构建进程 stdout 是 GBK，导出日志里的 ✅ 会 `UnicodeEncodeError` → 必须 `PYTHONIOENCODING=utf-8`。
+- 阈值：`RESCUE_STOP_MIN = 0.90`（本机复验 "把A区的水阀开一小会儿" stop=0.8686，0.85 会误判成停止；
+  抬到 0.90 后真停止 ≥0.93 仍过、误判被挡）。
+- 口径：零样本弱（intent 8–10/13），**只演固定 3 条**（"把泵关了吧"/"给片区A喷3秒"/"一直喷不要停"）。
 
 ## 已知坑（整合时踩到的）
 1. `serve/pages.py` 被 PR1 删了，但 `static_pages.load()` 还在用 → 已从主线恢复；别删。
@@ -116,6 +127,6 @@ python main.py                                           # PyQt5 GUI（指挥台
 6. 手机端 http 打开 `/m` 会自动升级 https；不想升级加 `?http=1`。HTTPS 没起来时页面不会给 https 死链。
 
 ## 测试
-- `py -3.14 tests/run_tests.py`：234 passed / 1 skipped（2026-10-21 整合后）
+- `py -3.14 tests/run_tests.py`：243 passed / 1 skipped（2026-10-23 品牌/EdgeJev 部署后）
 - `py -3.14 scripts/ask_eval.py`：库内召回 20/20、库外拒答 10/10、越权拦截 4/4
 - `py -3.14 scripts/ask_eval.py --llm` 才真调 Ollama

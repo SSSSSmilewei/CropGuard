@@ -219,7 +219,7 @@ def _generate(user_prompt, cfg):
     """调本地大模型。返回 (text, engine, error)。"""
     try:
         text = local_llm.generate(
-            '你是农智云系统的农业植保问答助手，回答必须严格依据用户消息中的【知识片段】。',
+            '你是株得系统的农业植保问答助手，回答必须严格依据用户消息中的【知识片段】。',
             user_prompt,
             timeout=float(cfg.get('timeout', 120)),
             temperature=0.2,

@@ -1,4 +1,4 @@
-# CropGuard 农智云 · ESP32 固件工程（PlatformIO）
+# 株得CropGuard · ESP32 固件工程（PlatformIO）
 
 把项目里「识别 → 物理执行 / 信号反馈」那一段落到 ESP32 开发板上的固件工程。
 **不是重写**：这里的每个角色都是从项目里已经跑通的 Arduino `.ino` 移植过来的，
