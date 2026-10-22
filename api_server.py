@@ -69,7 +69,7 @@ from serve import spa
 # 页面渲染（旧版 PC 首页 / 手机页 / 离线看板；保留为兜底与 /m 唯一入口）
 from serve import mobile as mobile_page
 from serve import pages as static_pages
-# EdgeJev 本地类型化决策（离线 CPU 推理，部署见 docs/edgejev.md）
+# EdgeJev 本地类型化决策（离线 CPU 推理，部署见 docs/株得CropGuard-总手册.md 第 7 节）
 from app import edge_engine
 # 现场测评评分口径（与 GUI 共用同一份纯函数）
 from app.eval_score import rubric_from_config as _rubric_from_config, score_with_rubric
@@ -661,7 +661,7 @@ async def feedback_status():
 
 
 # ==================== EdgeJev 本地类型化决策（离线 CPU 推理） ====================
-# 部署与设计见 app/edge_engine.py 与 docs/edgejev.md。
+# 部署与设计见 app/edge_engine.py 与 docs/株得CropGuard-总手册.md 第 7 节。
 # ⚠️ 定位（2026-10-16 与用户对齐）：EdgeJev 的作用是**在系统预设的固定选项集上做"选择题"**
 #    （choice / score / noul），把"理解/分流"变成可枚举、可校准、可审计的决策；
 #    **不提供自由问答式的语言性决策**。因此对外只暴露"决策点"（见 /api/edge/decision_points），

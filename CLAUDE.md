@@ -3,7 +3,7 @@
 > 2026-10-21 整合：本仓库 = 主线最新（手机端 http/https 合一、离线看板、mist 雾化、相机看门狗）
 > **+ 学弟 PR#1（Vue 3 前端 + 喷淋/流修复）+ 队友 PR#3（EdgeJev 本地决策 + 测评页）**。
 > 分支 `main`，提交 `merge: 接入队友 EdgeJev…` 之后为整合结果。比赛演示流程见
-> `docs/国赛最终演示流程.md`；一页速查见 `docs/演示速查卡.md`。
+> `docs/株得CropGuard-总手册.md`（演示/答辩/整合/EdgeJev 全在一份）。
 
 ## 项目位置 / 仓库
 - 工作目录：`D:\Dev Projects\Pycharm\yolov8`
@@ -49,7 +49,7 @@ py -3.14 tool/camera_probe.py          # 认相机 → 把 VID 写进 config CAM
 $env:CG_DEVICE='cpu'; py -3.14 api_server.py
 py -3.14 scripts/build_snapshot.py --samples pictures20   # 看板快照（默认读现成 per_class_val，约 1 分钟）
 py -3.14 scripts/build_dashboard.py                      # 离线看板 HTML（读现成产物，秒级）
-py -3.14 tests/run_tests.py                              # 243 passed / 1 skipped
+py -3.14 tests/run_tests.py                              # 244 passed / 0 failed
 python main.py                                           # PyQt5 GUI（指挥台也能一键拉起）
 ```
 启动横幅必须看到：`Spray transport/http_targets`、`雾化节点(mist)=[…]`、`[CERT] ✅ SAN…`、
@@ -101,7 +101,7 @@ python main.py                                           # PyQt5 GUI（指挥台
 - ⚠️ 标签噪声：蝗虫（mAP50 .66，图错标成盲蝽）、光肩星天牛（标签可疑）——别拿去现场凑数
 
 ## EdgeJev（队友 PR#3 · 本机已部署）
-- 包：`edgejev/`（Apache-2.0，上游 yzfly/edgejev）；适配层 `app/edge_engine.py`；文档 `docs/edgejev.md`
+- 包：`edgejev/`（Apache-2.0，上游 yzfly/edgejev）；适配层 `app/edge_engine.py`；文档 `docs/株得CropGuard-总手册.md` 第 7 节
 - 模型：`edge_models/jev-int8/`（**本机已构建，369MB**：`model.onnx` 335MB + `tokenizer.json` + `edgejev.json`；
   **不入 git**，换机要重跑 `scripts/build_edge_model.py` 或整目录拷贝）
 - 构建记录（2026-10-23 本机，int8）：官方示例 `dept=billing 0.993`、单句 77ms；验证通过。
@@ -127,6 +127,6 @@ python main.py                                           # PyQt5 GUI（指挥台
 6. 手机端 http 打开 `/m` 会自动升级 https；不想升级加 `?http=1`。HTTPS 没起来时页面不会给 https 死链。
 
 ## 测试
-- `py -3.14 tests/run_tests.py`：243 passed / 1 skipped（2026-10-23 品牌/EdgeJev 部署后）
+- `py -3.14 tests/run_tests.py`：244 passed / 0 failed（2026-10-23 品牌/EdgeJev 部署后，含真模型冒烟）
 - `py -3.14 scripts/ask_eval.py`：库内召回 20/20、库外拒答 10/10、越权拦截 4/4
 - `py -3.14 scripts/ask_eval.py --llm` 才真调 Ollama

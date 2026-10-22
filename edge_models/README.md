@@ -13,7 +13,7 @@ tokenizer.json  # 分词器
 edgejev.json    # 后端/精度/温度/特殊 token 等配置（Agent 由此识别）
 ```
 
-构建：`python scripts/build_edge_model.py`（见 [docs/edgejev.md](../docs/edgejev.md)）。
+构建：`python scripts/build_edge_model.py`（见 [docs/株得CropGuard-总手册.md](../docs/株得CropGuard-总手册.md)）。
 运行时只需要 `onnxruntime + tokenizers + numpy`，不需要 torch。
 
 > **2026-10-23 本机（演示机）已构建并部署**：`jev-int8/` 369MB，官方示例
