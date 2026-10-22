@@ -110,6 +110,23 @@ def _with_advice(res):
 
 
 # ---------------------------------------------------------------- 风险联动
+#: 演示安全开关：关掉后自动联动**只播语音、不下发喷淋**（手动按钮不受影响）。
+#: 现场由"演示指挥台"（/demo）或 POST /api/demo/auto_spray 切换。
+AUTO_SPRAY_ENABLED = True
+
+
+def set_auto_spray(enabled):
+    """打开/关闭"自动联动是否真的喷"（语音永远照播）。返回当前状态。"""
+    global AUTO_SPRAY_ENABLED
+    AUTO_SPRAY_ENABLED = bool(enabled)
+    return AUTO_SPRAY_ENABLED
+
+
+def auto_spray_enabled():
+    """当前自动联动是否真的会喷（演示指挥台状态灯用）。"""
+    return bool(AUTO_SPRAY_ENABLED)
+
+
 def _linkage(risk_level, detections, zone_group=None):
     """风险联动：语音播报 + 喷淋执行（均异步、失败静默、不阻塞推理）。
 
@@ -127,7 +144,7 @@ def _linkage(risk_level, detections, zone_group=None):
     spray_group = zone_group if (zone_group and group and group != 'all') else group
 
     sprayed = False
-    if risk_level in ('高风险', '中风险'):
+    if AUTO_SPRAY_ENABLED and risk_level in ('高风险', '中风险'):
         try:
             sprayed = spray.spray(risk_level, names, group_override=spray_group)
         except Exception:

@@ -18,6 +18,13 @@ import socket
 import subprocess
 import sys
 
+# 控制台按 UTF-8 输出：Windows 默认 GBK 时，下面的 ✅/❌ 会直接 UnicodeEncodeError 崩掉
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)

@@ -30,6 +30,7 @@
 ## 路由总表（整合后）
 | 路径 | 页面 | 说明 |
 | --- | --- | --- |
+| `/demo` | **演示指挥台**（原生单文件） | 一个页面串三套演示：①启动评分 GUI ②内嵌定点监控+自动喷洒总闸 ③手机二维码+最近决策；含十项自检 |
 | `/` `/stream` `/ask` `/spray` `/system` | Vue SPA（`web/dist`） | 检测台/实时监测/问答/喷淋/设备 |
 | `/dashboard` | Vue 看板 | 数据来自 `GET /api/dashboard`（`output/dashboard/snapshot.json`） |
 | `/dashboard-offline` | 原生单文件看板 | 快照内联，可 `file://` 双击打开，断网兜底 |
@@ -40,14 +41,16 @@
 | `/api/mist/*` | 雾化 REST | status/start/direct/stop（mist 固件适配在本页后端） |
 
 ## 启动 / 自检
+**现场（小白）只用双击**：`启动演示系统.bat`（起服务 + 开 `/demo`）、`停止演示系统.bat`、
+`启动评分GUI.bat`（备用）；桌面快捷方式由 `创建桌面快捷方式.bat` 生成。
 ```powershell
-py -3.14 tool/port_check.py            # 端口 + Ollama（本机曾因 emoji 编码崩，已修）
+py -3.14 tool/port_check.py            # 端口 + Ollama（GBK 控制台 emoji 崩已修）
 py -3.14 tool/camera_probe.py          # 认相机 → 把 VID 写进 config CAMERA
 $env:CG_DEVICE='cpu'; py -3.14 api_server.py
-py -3.14 scripts/build_snapshot.py --samples pictures20   # 看板快照（验证集约 6–8 分钟）
+py -3.14 scripts/build_snapshot.py --samples pictures20   # 看板快照（默认读现成 per_class_val，约 1 分钟）
 py -3.14 scripts/build_dashboard.py                      # 离线看板 HTML（读现成产物，秒级）
-py -3.14 tests/run_tests.py                              # 234 passed / 1 skipped
-python main.py                                           # PyQt5 GUI（现场评测面板）
+py -3.14 tests/run_tests.py                              # 243 passed / 1 skipped
+python main.py                                           # PyQt5 GUI（指挥台也能一键拉起）
 ```
 启动横幅必须看到：`Spray transport/http_targets`、`雾化节点(mist)=[…]`、`[CERT] ✅ SAN…`、
 `手机会话页(唯一入口): https://<IP>:8443/m`、`语音: engine=… ready=True`。
@@ -68,6 +71,12 @@ python main.py                                           # PyQt5 GUI（现场评
    `/api/ask_command` **规则优先，规则拿不准才调模型**；大模型永远不直接驱动硬件。
 8. 控制台统一 `sys.stdout.reconfigure(encoding='utf-8', errors='replace')`（api_server/port_check），
    否则 GBK 控制台下横幅里的 ✅ 会直接 `UnicodeEncodeError`。
+9. **演示安全开关**（`/demo` 指挥台）：
+   - 自动喷洒总闸 `POST /api/demo/auto_spray` → `app.inference.AUTO_SPRAY_ENABLED`，
+     关掉后 `_linkage` **只播语音不喷**（手动按钮不受影响）；
+   - 手机实时自动喷 `POST /api/demo/phone_auto`（默认 **false**，配置 `PHONE.live_auto_spray`）；
+   - `/api/demo/launch_gui` 用 `sys.executable main.py` 起独立进程（日志 `output/gui_launch.log`），
+     `/api/demo/close_gui` 可关；`/api/demo/status` 是状态灯唯一数据源。
 
 ## 训练与模型
 - 权重：`runs/train/pest27_final4/weights/best.pt`（mAP50 0.7601 / mAP50-95 0.4899，27 类）

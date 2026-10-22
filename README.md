@@ -18,10 +18,15 @@
 | 前端（PR#1） | Vue 3 单页前端（检测台/实时/问答/喷淋/设备/看板），喷淋同步等应答、流推原始帧、上下文隔离 | `web/`（dist 随仓库）、`serve/spa.py` |
 | EdgeJev（PR#3） | 本地类型化决策（规则优先 + 高置信兜底）、现场测评页、评分口径统一 | `edgejev/`、`app/edge_engine.py`、`/edge`、`/eval` |
 
-**页面入口**：`/` 检测台 · `/stream` 实时 · `/ask` 问答 · `/spray` 喷淋 · `/system` 设备/二维码 ·
-`/dashboard` 数据看板（`/dashboard-offline` 离线单文件） · `/m` 手机端 · `/eval` 测评 · `/edge` EdgeJev · `/classic` 旧首页兜底。
+**页面入口**：`/demo` 演示指挥台（三个大按钮）· `/` 检测台 · `/stream` 实时 · `/ask` 问答 ·
+`/spray` 喷淋 · `/system` 设备/二维码 · `/dashboard` 数据看板（`/dashboard-offline` 离线单文件） ·
+`/m` 手机端 · `/eval` 测评 · `/edge` EdgeJev · `/classic` 旧首页兜底。
 
-**比赛演示流程**：见 [docs/国赛最终演示流程.md](docs/国赛最终演示流程.md)（含 8/12/18 分钟三条路线、翻车处置、无硬件兜底）。
+**现场只双击** `启动演示系统.bat`（自动起服务并打开 `/demo`）；`停止演示系统.bat` 一键收场；
+`启动评分GUI.bat` 是评分窗口的备用入口。
+
+**比赛演示流程**：见 [docs/小白演示手册.md](docs/小白演示手册.md)（照着点，三套演示）与
+[docs/国赛最终演示流程.md](docs/国赛最终演示流程.md)（完整导演版，含 8/12/18 分钟路线、翻车处置、无硬件兜底）。
 
 ---
 

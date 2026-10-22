@@ -14,6 +14,7 @@ import json
 import time
 import asyncio
 import base64
+import subprocess
 import threading
 import traceback
 from datetime import datetime
@@ -54,6 +55,8 @@ from app.state import (
 from app.inference import (
     _predict_and_format, _with_advice, _linkage,
     _ensure_pump, _latest_result, _remember_sample,
+    set_auto_spray as set_auto_spray_linkage,
+    auto_spray_enabled as auto_spray_linkage_enabled,
 )
 
 # 防治建议：知识库秒出兜底 + RAG 接地生成（Ollama）
@@ -253,6 +256,13 @@ def advice(payload: dict):
 
 # ==================== 手机端页面 /m ====================
 _cfg_phone = config.get('PHONE', {}) or {}
+# 手机"实时模式"是否自动联动喷淋：默认关（方案二要求人工确认；演示第三套也必须手动）。
+# 演示指挥台 /demo 可一键切换，无需改配置。
+_phone_auto_spray = bool(_cfg_phone.get('live_auto_spray', False))
+# 演示指挥台「打开评分 GUI」启动的子进程（None=没启动过 / 已退出）
+_gui_proc = None
+# 最近一次"一句话 → 决策"的结果（演示台上的"决策依据"卡片读它）
+_last_command = {}
 # 真实监听端口（由 __main__ 里用 --port/--https-port 写入），
 # 供 /m 页面与 /qr 生成正确的手机访问地址。
 # https_on 只有 HTTPS 监听**真的**起来了才为 True：页面据此决定要不要升级到 HTTPS，
@@ -402,6 +412,16 @@ async def classic_index():
     看手机二维码，而且它不依赖 web/dist。
     """
     return static_pages.load('index')
+
+
+@app.get("/demo", response_class=HTMLResponse)
+async def demo_console():
+    """演示指挥台：一个页面串起三套演示（20 样本评分 / 定点自动喷洒 / 手机联动）。
+
+    刻意做成**单文件原生页**（不依赖 web/dist、不需要 Node）：
+    现场只开这一个页面，按钮都在这，状态灯都在这，步骤也写在这。
+    """
+    return static_pages.load('demo')
 
 
 @app.get("/api/client_config")
@@ -615,6 +635,19 @@ def ask_command(payload: dict):
     parsed.update(executed=bool(executed), available=bool(spray.available))
     if edge_info is not None:
         parsed['edge'] = edge_info
+    # 记下最近一次决策（演示台"决策依据"卡片 / 答辩回看用；只在内存里）
+    try:
+        _last_command.clear()
+        _last_command.update({
+            'text': text, 'intent': parsed.get('intent'), 'group': parsed.get('group'),
+            'duration': parsed.get('duration'), 'valid': bool(parsed.get('valid')),
+            'reply': parsed.get('reply'), 'parse_engine': parsed.get('parse_engine'),
+            'parse_latency_ms': parsed.get('parse_latency_ms'),
+            'edge': edge_info, 'executed': bool(executed),
+            'ts': datetime.now().strftime('%H:%M:%S'),
+        })
+    except Exception:
+        pass
     return {"success": True, **parsed}
 
 
@@ -1017,6 +1050,156 @@ def spray_stop(payload: dict = None):
             "gateway_available": spray.available}
 
 
+# ==================== 演示指挥台 /demo 的接口 ====================
+# 设计目标：让第一次上台的人只记一个地址（/demo）和三个大按钮。
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+_GUI_LOG = os.path.join(_ROOT, 'output', 'gui_launch.log')
+
+
+def _port_open(host, port, timeout=0.3):
+    """轻量探活（不依赖 requests；Ollama 状态灯用）。"""
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((host, int(port)))
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _gui_state():
+    """评分 GUI（main.py）是否还活着。"""
+    global _gui_proc
+    if _gui_proc is None:
+        return {'running': False, 'pid': None, 'exit_code': None}
+    code = _gui_proc.poll()
+    if code is not None:
+        _gui_proc = None
+        return {'running': False, 'pid': None, 'exit_code': code}
+    return {'running': True, 'pid': _gui_proc.pid, 'exit_code': None}
+
+
+@app.get("/api/demo/status")
+def demo_status():
+    """指挥台状态灯：一眼看出哪一环没就绪（现场排错全靠它）。"""
+    pool = {}
+    try:
+        pool = cam_pool_state()
+    except Exception:
+        pool = {}
+    cam = next(iter(pool.values()), {}) if pool else {}
+    spray_st = {'available': bool(spray.available), 'transport': spray.transport,
+                'groups': sorted(g for g in spray.allowed_groups if g != 'all'),
+                'nodes': [], 'auto': auto_spray_linkage_enabled()}
+    try:
+        if spray.enabled:
+            spray_st['nodes'] = spray.probe_nodes()
+    except Exception as exc:
+        spray_st['error'] = f'{type(exc).__name__}: {exc}'
+    tts = {}
+    try:
+        tts = feedback.status().get('tts', {}) or {}
+    except Exception:
+        tts = {}
+    edge = {'available': False, 'mode': 'none'}
+    try:
+        st = edge_engine.status() or {}
+        edge = {'available': bool(st.get('available')), 'mode': st.get('mode'),
+                'avg_ms': st.get('avg_ms'), 'hint': st.get('hint') or st.get('last_error') or ''}
+    except Exception as exc:
+        edge['error'] = f'{type(exc).__name__}: {exc}'
+    snap = os.path.join(_ROOT, 'output', 'dashboard', 'snapshot.json')
+    return {
+        'success': True,
+        'time': datetime.now().strftime('%H:%M:%S'),
+        'model': {'classes': len(yolo_model.names), 'device': device,
+                  'weights': os.path.basename(str(weights_path))},
+        'camera': {'open': bool(pool), 'state': cam.get('state'),
+                   'fps': cam.get('fps'), 'last_error': cam.get('last_error')},
+        'spray': spray_st,
+        'tts': {'ready': bool(tts.get('ready')), 'engine': tts.get('engine')},
+        'ollama': {'up': _port_open('127.0.0.1', 11434)},
+        'edge': edge,
+        'dashboard': {'snapshot': os.path.isfile(snap)},
+        'phone': {'auto_spray': bool(_phone_auto_spray), 'url': _phone_url()},
+        'gui': _gui_state(),
+    }
+
+
+@app.post("/api/demo/auto_spray")
+def demo_auto_spray(payload: dict = None):
+    """总闸：自动联动要不要真的喷（关掉后只播语音，手动按钮不受影响）。"""
+    payload = payload or {}
+    enabled = bool(payload.get('enabled', True))
+    return {'success': True, 'auto_spray': set_auto_spray_linkage(enabled)}
+
+
+@app.post("/api/demo/phone_auto")
+def demo_phone_auto(payload: dict = None):
+    """手机实时模式是否自动喷（默认关：方案二/第三套都要求人工确认）。"""
+    global _phone_auto_spray
+    payload = payload or {}
+    _phone_auto_spray = bool(payload.get('enabled', False))
+    return {'success': True, 'phone_auto_spray': _phone_auto_spray}
+
+
+@app.get("/api/demo/last_command")
+def demo_last_command():
+    """最近一次"一句话 → 决策"的结果（含规则/EdgeJev 用了哪个）。"""
+    return {'success': True, 'last': dict(_last_command)}
+
+
+@app.post("/api/demo/launch_gui")
+def demo_launch_gui():
+    """一键打开 20 样本评分 GUI（main.py）。已经开着就直接返回。"""
+    global _gui_proc
+    st = _gui_state()
+    if st['running']:
+        return {'success': True, 'already': True, **st}
+    script = os.path.join(_ROOT, 'main.py')
+    if not os.path.isfile(script):
+        return {'success': False, 'error': f'找不到 {script}'}
+    try:
+        os.makedirs(os.path.dirname(_GUI_LOG), exist_ok=True)
+        log = open(_GUI_LOG, 'ab', buffering=0)
+        _gui_proc = subprocess.Popen(
+            [sys.executable, script], cwd=_ROOT,
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0))
+    except Exception as exc:
+        traceback.print_exc()
+        return {'success': False, 'error': f'{type(exc).__name__}: {exc}'}
+    time.sleep(0.8)
+    st = _gui_state()
+    return {'success': st['running'], 'already': False, **st,
+            'log': os.path.relpath(_GUI_LOG, _ROOT)}
+
+
+@app.post("/api/demo/close_gui")
+def demo_close_gui():
+    """关掉评分 GUI（演示结束/相机被占用时用）。"""
+    global _gui_proc
+    st = _gui_state()
+    if not st['running']:
+        return {'success': True, 'already': True, **st}
+    try:
+        _gui_proc.terminate()
+        try:
+            _gui_proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            _gui_proc.kill()
+    except Exception as exc:
+        return {'success': False, 'error': f'{type(exc).__name__}: {exc}'}
+    _gui_proc = None
+    return {'success': True, 'already': False, 'running': False, 'pid': None, 'exit_code': None}
+
+
 @app.get("/api/camera/health")
 async def camera_health(cam: str = None):
     """相机健康：状态/帧龄/重开次数/实测 fps。
@@ -1220,9 +1403,10 @@ async def ws_phone(websocket: WebSocket):
                 "frame_no": n_frames,
                 "ts": datetime.now().strftime('%H:%M:%S'),
             }
-            # 手机实时流同样做风险联动（语音 + 喷淋），与定点相机一致的口径
+            # 手机实时流：默认**不自动喷**（方案二要求人工确认；演示第三套也要手动）。
+            # 需要自动时由 /demo 指挥台打开 _phone_auto_spray。
             risk_level = result["risk"]["level"]
-            if risk_level in ('高风险', '中风险'):
+            if _phone_auto_spray and risk_level in ('高风险', '中风险'):
                 # 联动里有喷淋 HTTP 下发（可能阻塞到超时）→ 不等它，先把结果回给手机
                 asyncio.get_running_loop().run_in_executor(
                     None, _linkage, risk_level, result["detections"])

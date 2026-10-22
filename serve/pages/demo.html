@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>农智云 · 演示指挥台</title>
+<style>
+  :root {
+    --bg: #0f1712;
+    --panel: #17211a;
+    --panel-2: #1d2a21;
+    --line: #2c3d31;
+    --ink: #eef5ee;
+    --ink-2: #b9c9ba;
+    --ink-3: #7f9483;
+    --brand: #46b97a;
+    --brand-2: #2e8f5b;
+    --gold: #d8b25c;
+    --red: #e0605a;
+    --amber: #e0a94f;
+    --ok: #57c98a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.65 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  }
+  header {
+    padding: 22px 32px 16px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    background: linear-gradient(180deg, #142018, #0f1712);
+  }
+  header h1 { margin: 0; font-size: 28px; letter-spacing: .5px; }
+  header .sub { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
+  header .clock { margin-left: auto; font-family: Consolas, monospace; color: var(--ink-2); font-size: 14px; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px 32px 60px; }
+
+  .pills { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel); font-size: 13.5px; color: var(--ink-2);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(87,201,138,.7); }
+  .dot.warn { background: var(--amber); }
+  .dot.bad { background: var(--red); }
+  .pill b { color: var(--ink); font-weight: 600; }
+
+  .seq { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 22px; }
+  .seq a {
+    text-decoration: none; color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; font-size: 14px;
+  }
+  .seq a:hover { border-color: var(--brand); }
+
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+  @media (max-width: 1100px) { .cards { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    padding: 22px; display: flex; flex-direction: column; gap: 14px; position: relative;
+  }
+  .card .no {
+    position: absolute; top: -14px; left: 20px; background: var(--brand-2); color: #fff;
+    font-weight: 700; border-radius: 8px; padding: 2px 10px; font-size: 13px;
+  }
+  .card h2 { margin: 6px 0 0; font-size: 21px; }
+  .card .who { color: var(--ink-3); font-size: 13px; }
+  .card ol { margin: 0; padding-left: 22px; color: var(--ink-2); font-size: 14.5px; }
+  .card ol li { margin: 7px 0; }
+  .card ol b { color: var(--gold); font-weight: 600; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border: 1px solid transparent; border-radius: 12px; cursor: pointer;
+    padding: 14px 18px; font-size: 17px; font-weight: 700; font-family: inherit;
+    background: var(--brand-2); color: #fff; text-decoration: none;
+  }
+  .btn:hover { background: var(--brand); }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .btn.ghost { background: transparent; border-color: var(--line); color: var(--ink-2); font-size: 14px; padding: 9px 14px; font-weight: 600; }
+  .btn.ghost:hover { border-color: var(--brand); color: var(--ink); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .hint { font-size: 13px; color: var(--ink-3); }
+  .warnbox {
+    border-left: 3px solid var(--amber); background: rgba(224,169,79,.08);
+    padding: 9px 12px; border-radius: 8px; font-size: 13.5px; color: #f0d9a8;
+  }
+  .state { font-size: 13.5px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+
+  .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2); }
+  .switch input { width: 46px; height: 26px; appearance: none; background: #33463a; border-radius: 999px; position: relative; cursor: pointer; outline: none; }
+  .switch input:checked { background: var(--brand-2); }
+  .switch input::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+    border-radius: 50%; background: #fff; transition: left .15s;
+  }
+  .switch input:checked::after { left: 23px; }
+
+  .qr { width: 168px; height: 168px; background: #fff; padding: 8px; border-radius: 10px; display: block; }
+  .phone-url { font-family: Consolas, monospace; font-size: 15px; color: var(--gold); word-break: break-all; }
+
+  .live-wrap {
+    margin-top: 22px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 16px; padding: 14px; display: none;
+  }
+  .live-wrap.on { display: block; }
+  .live-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .live-head h2 { margin: 0; font-size: 18px; }
+  .live-head .grow { flex: 1; }
+  .live-frame { width: 100%; height: 62vh; min-height: 420px; border: 0; border-radius: 12px; background: #0a0f0b; display: block; }
+
+  .decision { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; color: var(--ink-2); }
+  .decision b { color: var(--ink); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 12px; background: #2a3b2f; color: var(--ink-2); margin-left: 6px; }
+  .badge.rule { background: #2f3f4f; color: #a9cbe8; }
+  .badge.edge { background: #3a2f4f; color: #d3b8f0; }
+
+  .checklist { margin-top: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; }
+  .checklist h3 { margin: 0 0 10px; font-size: 17px; }
+  .checklist ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 22px; font-size: 14px; color: var(--ink-2); }
+  .checklist li::before { content: "○ "; color: var(--ink-3); }
+  .checklist li.pass::before { content: "✅ "; }
+  .checklist li.fail::before { content: "❌ "; color: var(--red); }
+  details { margin-top: 18px; color: var(--ink-2); font-size: 14px; }
+  details summary { cursor: pointer; color: var(--ink); font-weight: 600; }
+  details ol { margin: 8px 0 0; }
+  footer { margin-top: 28px; color: var(--ink-3); font-size: 13px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>农智云 · 演示指挥台</h1>
+    <div class="sub">只开这一个页面：三个大按钮 = 三套演示。状态灯全绿再上台。</div>
+  </div>
+  <div class="clock" id="clock">--:--:--</div>
+</header>
+
+<div class="wrap">
+  <div class="pills" id="pills">
+    <span class="pill"><span class="dot"></span>正在读取状态…</span>
+  </div>
+
+  <div class="seq">
+    <a href="#card1">① 20 样本限时评分（180 秒）</a>
+    <a href="#card2">② 定点自动喷洒</a>
+    <a href="#card3">③ 手机联动 + 大模型 + 决策</a>
+    <a href="/dashboard" target="_blank">数据看板（备用）</a>
+  </div>
+
+  <div class="cards">
+    <!-- ==================== ① 20 样本评分 ==================== -->
+    <section class="card" id="card1">
+      <span class="no">第一套 · 计分</span>
+      <h2>20 个实体样本 · 180 秒</h2>
+      <div class="who">用桌面 GUI（评分面板在这里）</div>
+      <ol>
+        <li><b>先关掉</b>「实时监测」标签页（相机只能被一个程序用）</li>
+        <li>点下面的按钮 → 桌面会弹出 GUI 窗口（约 5–10 秒）</li>
+        <li>点「打开摄像头」→ 画面出来后点「开始运行」</li>
+        <li>先空拍一张热身 → 点「↻ 新一轮评测」清空</li>
+        <li>逐个放样本 → 点「📷 拍照识别」→ 换下一只（计时自动开始）</li>
+        <li>满 20 张自动停表 → 评委判 ✓/✗ →「导出评分报告」</li>
+      </ol>
+      <div class="row">
+        <button class="btn" id="btnGui">打开评分 GUI</button>
+        <button class="btn ghost" id="btnGuiClose">关闭 GUI</button>
+      </div>
+      <div class="state"><span class="dot" id="guiDot"></span><span id="guiState">GUI 未启动</span></div>
+      <div class="hint">如果按钮没反应：看 <code>output/gui_launch.log</code>；也可以直接双击桌面「启动评分GUI.bat」。</div>
+    </section>
+
+    <!-- ==================== ② 定点自动喷洒 ==================== -->
+    <section class="card" id="card2">
+      <span class="no">第二套 · 自动</span>
+      <h2>定点监控 · 自动喷洒</h2>
+      <div class="who">外置摄像头（模拟片区 A 定点作业）</div>
+      <ol>
+        <li>把 <b>3 只以上</b>同种害虫放进机位视野（或让它们占满画面）</li>
+        <li>点「开始定点监控」→ 画面就在本页下方出现（不用切标签）</li>
+        <li>等 <b>1–2 秒</b>：风险条变「高风险」→ 自动喷 + 语音播报</li>
+        <li>指一下下方「联动记录」，新增一条就说明闭环成功</li>
+        <li><b>演完马上点「关闭监控」</b>（释放相机，否则下一套打不开）</li>
+      </ol>
+      <div class="row">
+        <button class="btn" id="btnLive">开始定点监控（在本页看）</button>
+        <a class="btn ghost" href="/stream" target="_blank" rel="noopener">另开一页</a>
+        <button class="btn ghost" id="btnStopSpray">立即停止喷洒</button>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autoSpray" checked>
+        <span>自动喷洒总闸（关 = 只播语音、不喷）</span>
+      </label>
+      <div class="state"><span class="dot" id="sprayDot"></span><span id="sprayState">读取节点状态…</span></div>
+      <div class="warnbox">现场把雾化片放进水杯/托盘里再喷，别对着评委和电脑。</div>
+    </section>
+
+    <!-- ==================== ③ 手机联动 ==================== -->
+    <section class="card" id="card3">
+      <span class="no">第三套 · 人机协同</span>
+      <h2>手机拍照/实时 → 大模型 → 决策 → 手动喷洒</h2>
+      <div class="who">手机 + 服务器 + 物理执行</div>
+      <div class="row" style="align-items:flex-start">
+        <img class="qr" src="/qr?size=8" alt="手机端入口二维码">
+        <div style="flex:1; min-width:200px">
+          <div class="hint">手机连同一个 WiFi/热点，扫码或输入：</div>
+          <div class="phone-url" id="phoneUrl">读取中…</div>
+          <div class="hint" style="margin-top:6px">首次打开会提示证书不受信任 → 点「高级 → 继续前往」。</div>
+        </div>
+      </div>
+      <ol>
+        <li>手机开页面 →「📷 拍照模式」→ 对陌生害虫拍一张</li>
+        <li>看结果：虫种 + 置信度 + 风险 + 防治建议</li>
+        <li>下滑到问答，问「这个虫怎么防治？」→ 大模型给建议</li>
+        <li>输入「给 A 片区喷 3 秒」→「解析指令」（此时还没喷）</li>
+        <li>确认执行 → 设备动作 + 语音 + 历史新增</li>
+      </ol>
+      <label class="switch">
+        <input type="checkbox" id="phoneAuto">
+        <span>手机「实时模式」自动喷（默认关：要人工确认）</span>
+      </label>
+      <div class="decision" id="lastCmd">最近一次决策：还没有记录（去手机上说一句话）</div>
+      <div class="warnbox">大模型只给建议；喷不喷由你点确认。这就是"安全边界"。</div>
+    </section>
+  </div>
+
+  <!-- ==================== 内嵌实时监控（同一页看画面） ==================== -->
+  <section class="live-wrap" id="liveWrap">
+    <div class="live-head">
+      <h2>定点监控画面</h2>
+      <span class="hint grow">放 3 只以上害虫 → 等 1–2 秒 → 看自动喷洒与语音</span>
+      <button class="btn ghost" id="btnRestartCam">重启相机</button>
+      <button class="btn ghost" id="btnLiveClose">关闭监控（释放相机）</button>
+    </div>
+    <iframe class="live-frame" id="liveFrame" title="定点监控实时画面"></iframe>
+  </section>
+
+  <!-- ==================== 自检 ==================== -->
+  <div class="checklist">
+    <h3>一键自检（上台前点一次，全绿再演）</h3>
+    <ul id="checkList">
+      <li>等待检查…</li>
+    </ul>
+    <div class="row" style="margin-top:12px">
+      <button class="btn ghost" id="btnCheck">重新自检</button>
+      <span class="hint" id="checkHint"></span>
+    </div>
+  </div>
+
+  <details>
+    <summary>出问题了怎么办（点开看 6 条）</summary>
+    <ol>
+      <li><b>实时画面不出来</b>：等 10 秒（无相机要探测）→ 关标签重开 → 还不行就切手机实时模式。</li>
+      <li><b>点了喷但没反应</b>：看第二套卡片的状态灯；多半是节点 IP 变了 → 不要现场改配置，改用手机"确认喷洒"继续演。</li>
+      <li><b>GUI 打不开相机</b>：实时监测标签没关 / 微信占用相机 → 关掉再点。</li>
+      <li><b>手机打不开页面</b>：确认手机和电脑同一个 WiFi；地址用上面二维码下面那行；HTTPS 提示不受信任 → 继续访问。</li>
+      <li><b>数据看板空白</b>：点导航里的「数据看板（备用）」或直接开 <code>/dashboard-offline</code>。</li>
+      <li><b>页面白屏/按钮全灰</b>：打开 <code>/classic</code> 用旧版首页继续，或重启「启动演示系统.bat」。</li>
+    </ol>
+  </details>
+
+  <footer>
+    提示：这个页面只是"遥控器"，真正在干活的是后台那个黑窗口（服务器）。<b>别关它</b>；
+    演示结束再用「停止演示系统.bat」统一关。<br>
+    完整流程见 docs/国赛最终演示流程.md · 一页速查 docs/演示速查卡.md
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+
+  function setPill(el, tone, text) {
+    el.className = 'dot' + (tone ? ' ' + tone : '');
+    el.nextElementSibling.innerHTML = text;
+  }
+
+  function pill(label) {
+    const span = document.createElement('span');
+    span.className = 'pill';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    const txt = document.createElement('span');
+    txt.innerHTML = label;
+    span.appendChild(dot);
+    span.appendChild(txt);
+    return span;
+  }
+
+  async function getJSON(url, opts) {
+    const r = await fetch(url, opts);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }
+
+  function renderPills(st) {
+    const box = $('pills');
+    box.innerHTML = '';
+    const items = [
+      ['服务', 'ok', '服务器在线'],
+      ['模型', st.model && st.model.classes ? 'ok' : 'bad',
+        '模型 ' + (st.model ? st.model.classes : '?') + ' 类 · ' + (st.model ? st.model.device : '-')],
+      ['相机', st.camera && st.camera.open ? 'ok' : 'warn',
+        st.camera && st.camera.open ? ('相机已打开 ' + (st.camera.fps || '-') + ' fps') : '相机未打开（用的时候才占）'],
+      ['节点', (st.spray && st.spray.nodes && st.spray.nodes.length &&
+        st.spray.nodes.every((n) => n.online)) ? 'ok' : 'bad',
+        (st.spray && st.spray.nodes && st.spray.nodes.length)
+          ? ('喷淋节点 ' + st.spray.nodes.filter((n) => n.online).length + '/' + st.spray.nodes.length + ' 在线')
+          : '喷淋节点未配置'],
+      ['语音', st.tts && st.tts.ready ? 'ok' : 'bad',
+        '语音 ' + ((st.tts && st.tts.engine) || '不可用')],
+      ['大模型', st.ollama && st.ollama.up ? 'ok' : 'warn',
+        st.ollama && st.ollama.up ? 'Ollama 就绪' : 'Ollama 未启动（问答会降级）'],
+      ['决策', st.edge && st.edge.available ? 'ok' : 'warn',
+        'EdgeJev ' + ((st.edge && st.edge.mode) || 'none')],
+      ['看板', st.dashboard && st.dashboard.snapshot ? 'ok' : 'warn',
+        st.dashboard && st.dashboard.snapshot ? '看板快照已生成' : '看板快照未生成'],
+    ];
+    items.forEach(([label, tone, text]) => {
+      const p = pill('<b>' + label + '</b> · ' + text);
+      p.firstChild.className = 'dot ' + tone;
+      box.appendChild(p);
+    });
+  }
+
+  function renderGui(st) {
+    const running = st.gui && st.gui.running;
+    $('guiDot').className = 'dot ' + (running ? 'ok' : '');
+    $('guiState').textContent = running ? ('GUI 运行中（pid ' + st.gui.pid + '）') : 'GUI 未启动';
+    $('btnGui').disabled = running;
+  }
+
+  function renderSpray(st) {
+    const s = st.spray || {};
+    const nodes = s.nodes || [];
+    const online = nodes.filter((n) => n.online).length;
+    $('sprayDot').className = 'dot ' + (nodes.length && online === nodes.length ? 'ok' :
+      (online ? 'warn' : 'bad'));
+    $('sprayState').textContent = nodes.length
+      ? ('节点 ' + online + '/' + nodes.length + ' 在线 · 传输 ' + (s.transport || '-') +
+         ' · 自动喷洒 ' + (s.auto ? '开' : '关'))
+      : ('节点未配置 · 传输 ' + (s.transport || '-'));
+    const cb = $('autoSpray');
+    if (document.activeElement !== cb) cb.checked = !!s.auto;
+  }
+
+  function renderPhone(st) {
+    const p = st.phone || {};
+    if (p.url) $('phoneUrl').textContent = p.url;
+    const cb = $('phoneAuto');
+    if (document.activeElement !== cb) cb.checked = !!p.auto_spray;
+  }
+
+  async function renderLastCommand() {
+    try {
+      const r = await getJSON('/api/demo/last_command');
+      const c = r.last || {};
+      if (!c.text) return;
+      const engine = c.parse_engine === 'edge'
+        ? '<span class="badge edge">EdgeJev 兜底</span>'
+        : '<span class="badge rule">规则解析</span>';
+      const edge = c.edge ? (' · 模型 ' + (c.edge.intent || '?') + ' / ' + (c.edge.latency_ms || '?') + 'ms') : '';
+      $('lastCmd').innerHTML =
+        '<b>' + c.ts + '</b> 「' + c.text + '」→ 意图 <b>' + (c.intent || '未识别') + '</b>' +
+        ' · 片区 <b>' + (c.group || '-') + '</b> · ' + (c.duration || 0) + ' 秒' +
+        ' ' + engine + edge +
+        '<br>送达：<b>' + (c.executed ? '是（设备已动作）' : '否（还在等你确认）') + '</b>' +
+        (c.reply ? ' · ' + c.reply : '');
+    } catch (e) { /* 忽略 */ }
+  }
+
+  let lastStatus = null;
+
+  async function refresh() {
+    try {
+      const st = await getJSON('/api/demo/status');
+      lastStatus = st;
+      $('clock').textContent = st.time + ' · 运行中';
+      renderPills(st);
+      renderGui(st);
+      renderSpray(st);
+      renderPhone(st);
+    } catch (e) {
+      $('clock').textContent = '连不上服务器';
+      $('pills').innerHTML = '<span class="pill"><span class="dot bad"></span>连不上服务器：确认黑窗口还开着</span>';
+    }
+    renderLastCommand();
+  }
+
+  async function runCheck() {
+    const ul = $('checkList');
+    ul.innerHTML = '';
+    let st;
+    try {
+      st = await getJSON('/api/demo/status');
+    } catch (e) {
+      ul.innerHTML = '<li class="fail">连不上服务器（黑窗口关了吗？）</li>';
+      return;
+    }
+    const nodes = (st.spray && st.spray.nodes) || [];
+    const checks = [
+      ['服务器在线', true],
+      ['模型已加载（27 类）', !!(st.model && st.model.classes)],
+      ['喷淋链路已配置', !!(st.spray && st.spray.available)],
+      ['喷淋节点至少 1 个在线（没有也能演，只是设备不动）', nodes.some((n) => n.online)],
+      ['语音后端就绪', !!(st.tts && st.tts.ready)],
+      ['Ollama 就绪（问答要用）', !!(st.ollama && st.ollama.up)],
+      ['看板快照已生成', !!(st.dashboard && st.dashboard.snapshot)],
+      ['EdgeJev 模型已就位（没有也能演规则链路）', !!(st.edge && st.edge.available)],
+      ['手机地址可用（同 WiFi）', !!(st.phone && st.phone.url)],
+    ];
+    let fail = 0;
+    checks.forEach(([text, ok]) => {
+      const li = document.createElement('li');
+      li.textContent = text;
+      li.className = ok ? 'pass' : 'fail';
+      if (!ok) fail += 1;
+      ul.appendChild(li);
+    });
+    $('checkHint').textContent = fail === 0
+      ? '全部通过，可以上台。'
+      : (fail + ' 项未就绪：红叉不是"坏了"，按卡片里的降级办法继续演。');
+  }
+
+  function liveOpen() {
+    const wrap = $('liveWrap');
+    const frame = $('liveFrame');
+    if (!frame.src || frame.src === 'about:blank') frame.src = '/stream';
+    wrap.classList.add('on');
+    wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('btnLive').textContent = '监控已打开（画面在下方）';
+  }
+
+  function liveClose() {
+    const wrap = $('liveWrap');
+    const frame = $('liveFrame');
+    frame.src = 'about:blank';
+    wrap.classList.remove('on');
+    $('btnLive').textContent = '开始定点监控（在本页看）';
+    setTimeout(refresh, 900);
+  }
+
+  $('btnLive').addEventListener('click', () => {
+    if ($('liveWrap').classList.contains('on')) {
+      $('liveWrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      liveOpen();
+    }
+  });
+
+  $('btnLiveClose').addEventListener('click', liveClose);
+
+  $('btnRestartCam').addEventListener('click', async () => {
+    try {
+      await getJSON('/api/camera/restart', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cam: null }),
+      });
+    } catch (e) { /* 忽略 */ }
+    setTimeout(refresh, 1500);
+  });
+
+  $('btnGui').addEventListener('click', async () => {
+    const btn = $('btnGui');
+    // 相机独占：GUI 要开相机，先把本页的监控关掉（等 1.2 秒让 WS 断开、设备释放）
+    if ($('liveWrap').classList.contains('on')) {
+      liveClose();
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+    btn.disabled = true;
+    btn.textContent = '正在启动…（约 5–10 秒）';
+    try {
+      const r = await getJSON('/api/demo/launch_gui', { method: 'POST' });
+      if (!r.success) alert('启动失败：' + (r.error || '看 output/gui_launch.log'));
+    } catch (e) {
+      alert('启动失败：' + e.message);
+    } finally {
+      btn.textContent = '打开评分 GUI';
+      refresh();
+    }
+  });
+
+  $('btnGuiClose').addEventListener('click', async () => {
+    if (!confirm('确定关闭评分 GUI？未导出的评分会丢。')) return;
+    try { await getJSON('/api/demo/close_gui', { method: 'POST' }); } catch (e) { /* 忽略 */ }
+    refresh();
+  });
+
+  $('btnStopSpray').addEventListener('click', async () => {
+    try {
+      await getJSON('/api/spray/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group: 'all', via: 'demo-console' }),
+      });
+    } catch (e) { /* 忽略 */ }
+    refresh();
+  });
+
+  $('autoSpray').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    try {
+      await getJSON('/api/demo/auto_spray', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: on }),
+      });
+    } catch (err) { /* 忽略 */ }
+    refresh();
+  });
+
+  $('phoneAuto').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    try {
+      await getJSON('/api/demo/phone_auto', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: on }),
+      });
+    } catch (err) { /* 忽略 */ }
+    refresh();
+  });
+
+  $('btnCheck').addEventListener('click', runCheck);
+
+  refresh();
+  runCheck();
+  setInterval(refresh, 4000);
+})();
+</script>
+</body>
+</html>
