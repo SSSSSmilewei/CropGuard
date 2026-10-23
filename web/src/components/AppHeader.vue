@@ -8,6 +8,7 @@ const { state, nodesOnline } = useStation()
 
 const NAV = [
   { to: '/', label: '检测台' },
+  { to: '/eval', label: '现场评分' },
   { to: '/stream', label: '实时监测' },
   { to: '/ask', label: '农技问答' },
   { to: '/spray', label: '喷淋控制' },

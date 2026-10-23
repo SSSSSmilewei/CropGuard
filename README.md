@@ -1,374 +1,387 @@
-# 株得CropGuard · 农作物虫害个体化识别与精准减药决策实施系统
+# 株得 CropGuard
 
-> 基于 **YOLOv8s** 的 27 类农作物害虫检测系统，配套 PyQt5 桌面 GUI、手机端网页、离线大模型（RAG + 防幻觉）问答与喷洒联动。
-> 项目曾获 **2026 睿抗机器人开发者大赛（CAIR 赛道）省赛一等奖**，晋级国赛。
-
-> 🆕 **第一次接手这个项目？先看 [docs/archive/新手使用指南.md](docs/archive/新手使用指南.md)** —— 从装环境到手机连上去，一步步照着敲。
-> 🖱️ **不想用命令行？看 [docs/archive/PyCharm运行指南.md](docs/archive/PyCharm运行指南.md)** —— 项目已内置 6 个一键运行配置，点鼠标就行。
-
----
-
-## 0. 整合版速览
-
-当前 `main` 已把三条线合成一个可现场演示的版本：
-
-| 来源 | 贡献 | 落点 |
-| --- | --- | --- |
-| 主线 | 手机端 http/https 合一、离线看板、mist 雾化、相机看门狗、语音多后端、RAG 防幻觉 | `serve/mobile.py`、`serve/pages/dashboard.html`、`feedback/spray.py`、`tool/camera_source.py` |
-| 前端（PR#1） | Vue 3 单页前端（检测台/实时/问答/喷淋/设备/看板），喷淋同步等应答、流推原始帧、上下文隔离 | `web/`（dist 随仓库）、`serve/spa.py` |
-| EdgeJev（PR#3） | 本地类型化决策（规则优先 + 高置信兜底）、现场测评页、评分口径统一 | `edgejev/`、`app/edge_engine.py`、`/edge`、`/eval` |
-
-**页面入口**：`/demo` 演示指挥台（三个大按钮）· `/` 检测台 · `/stream` 实时 · `/ask` 问答 ·
-`/spray` 喷淋 · `/system` 设备/二维码 · `/dashboard` 数据看板（`/dashboard-offline` 离线单文件） ·
-`/m` 手机端 · `/eval` 测评 · `/edge` EdgeJev · `/classic` 旧首页兜底。
-
-**现场只双击** `启动演示系统.bat`（自动起服务并打开 `/demo`）；`停止演示系统.bat` 一键收场；
-`启动评分GUI.bat` 是评分窗口的备用入口。
-
-**比赛演示流程**：见 [docs/株得CropGuard-总手册.md](docs/株得CropGuard-总手册.md)（速查卡、三套演示、答辩问答、翻车处置、EdgeJev 部署全在这一份）。
+> **农作物虫害个体化识别与精准减药决策实施系统** —— YOLOv8s 27 类害虫检测 + 现场评分 + 实时监测自动喷洒 + 离线大模型问答。
+>
+> 2026 睿抗机器人开发者大赛（CAIR 赛道）省赛一等奖 · 晋级国赛。
+>
+> **当前版本：v0.1（初版集成 · 闭环 demo 可运行 · 未优化，已知问题见文末）**
 
 ---
 
-## 1. 项目简介
+## 目录
 
-系统对农作物实拍图像/视频/摄像头画面（含**手机摄像头**）进行害虫目标检测，识别 27 类常见农作物害虫，
-并根据检测结果自动生成防治建议、语音播报、按片区联动喷洒。核心能力：
+1. [30 秒看懂](#1-30-秒看懂)
+2. [快速开始](#2-快速开始)
+3. [页面地图](#3-页面地图)
+4. [三套演示](#4-三套演示)
+5. [评分系统（20 样本 / 180 秒）](#5-评分系统20-样本--180-秒)
+6. [实时监测与自动喷洒](#6-实时监测与自动喷洒)
+7. [手机端](#7-手机端)
+8. [AI 问答与防幻觉](#8-ai-问答与防幻觉)
+9. [EdgeJev 本地决策](#9-edgejev-本地决策)
+10. [数据看板（口径要分清）](#10-数据看板口径要分清)
+11. [27 类害虫对照表](#11-27-类害虫对照表)
+12. [系统架构](#12-系统架构)
+13. [配置说明](#13-配置说明)
+14. [目录结构](#14-目录结构)
+15. [测试与自检](#15-测试与自检)
+16. [常见问题](#16-常见问题)
+17. [已知问题（v0.1）](#17-已知问题v01)
+18. [许可与致谢](#18-许可与致谢)
 
-- **多源检测**：图片、目录批处理、视频逐帧、USB 工业相机实时流、手机摄像头实时上传
-- **相机共享 + 自愈**：GUI/网页/手机共用同一路采集（`tool/camera_source.py`），断流自动重开，多个客户端同时看不再互相抢设备
-- **AI 问答（RAG + 防幻觉）**：本地 Ollama `qwen2.5:7b` + 内置知识库检索，**知识库没覆盖就明确拒答**，回答带"依据"条目
-- **语音反馈**：离线 TTS（多后端自动兜底），**每次检测都会播报**（不是只响第一次），文案与真实动作一致
-- **喷洒联动**：风险 → 片区喷洒 + 语音；自然语言指令需**人工确认**后才执行（大模型不直接驱动硬件）
-- **手机端一页搞定**：拍照识别（HTTP 可用）、实时识别（HTTPS）、提问大模型、远程喷洒、历史回看
-- **可配置**：模型、设备、UI、AI、相机、语音、RAG、手机端均通过 `config/configs.yaml` 配置
+---
+
+## 1. 30 秒看懂
+
+- **识别**：单张图/视频/摄像头 → 逐虫出框 + 虫种 + 置信度（27 类），CPU 约 100–250ms/张。
+- **决策**：风险分级（无/低/中/高）→ 按 `risk_map` 查表决定喷哪个片区、喷几秒；**剂量来自表，不来自模型即兴**。
+- **执行**：服务器 HTTP 下发到 ESP32 节点（手写 sketch：`/start?time=N`、`/startDirect`、`/stop`）。
+- **人机协同**：手机拍照/实时上传 → 服务器识别 → 大模型给建议 → 人工确认后才喷。
+- **离线**：模型、知识库、语音、问答全部本机运行，不调用任何外部 API。
 
 ---
 
 ## 2. 快速开始
 
-### 2.1 环境要求
+### 2.1 环境
 
 | 项目 | 要求 |
-| ---- | ---- |
-| 操作系统 | Windows 10/11（推荐），Ubuntu 20.04+ 也可运行 |
-| Python | **3.8 ~ 3.11**（推荐 3.10） |
-| GPU | 可选。有 NVIDIA 显卡则推理更快；无 GPU 也能用 CPU 运行 |
+| --- | --- |
+| 系统 | Windows 10/11（现场演示机）；Ubuntu 20.04+ 也可运行 |
+| Python | 本机实测 **3.14**（`D:\Dev Env\Python\python.exe`）或 conda `pest-gpu` 环境；**带 torch / opencv / fastapi** |
+| 显卡 | 可选。有 NVIDIA 用 GPU；没有就 CPU（启动时自动回退，也可 `CG_DEVICE=cpu`） |
 
-> 注意：项目依赖 `torch==2.0.1`，不支持 Python 3.12 及以上，请务必用 3.8~3.11。
-
-### 2.2 安装依赖
-
-```bash
-# 1) 创建并激活虚拟环境（Windows）
-python -m venv .venv
-.venv\Scripts\activate
-
-# 2) 安装依赖（CPU 版 PyTorch，开箱即用）
-pip install -r requirements.txt
-# 只跑服务器（不用 GUI）时用更精简的清单：
-pip install -r requirements-server.txt
+```powershell
+py -3.14 -c "import torch, cv2, fastapi; print('ok')"    # 先确认解释器可用
+pip install -r requirements-server.txt                   # 只跑服务
+pip install -r requirements.txt                          # 连桌面 GUI 一起（PyQt5）
 ```
 
-> **有 NVIDIA 显卡想用 GPU 推理**：先按上面装完，再用 CUDA 版 torch 覆盖（以 CUDA 11.8 为例）：
-> ```bash
-> pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
-> ```
-> 然后确认 `nvidia-smi` 能看到显卡。
+### 2.2 三种启动方式（任选一种，**不要同时开两个**）
 
-### 2.3 修改设备（无显卡必须做）
+**A. 双击（现场最稳）**
 
-打开 `config/configs.yaml`，把 `MODEL.DEVICE` 从 `'cuda:0'` 改成 `'cpu'`。
+| 文件 | 作用 |
+| --- | --- |
+| `启动演示系统.bat` | 起服务（HTTP 8080 + HTTPS 8443）→ 自动打开 `/demo` 演示指挥台 |
+| `停止演示系统.bat` | 关掉占用 8080/8443 的 Python 进程（不动 Ollama） |
+| `启动评分GUI.bat` | 只开桌面评分 GUI（备用，不常驻） |
+| `创建桌面快捷方式.bat` | 在桌面生成「株得演示」快捷方式 |
 
-### 2.4 启动方式
+**B. PyCharm（图形化，推荐调试用）**
 
-```bash
-python main.py                      # 桌面 GUI（检测 + 语音 + 大模型问答）
-python api_server.py                # Web 服务（PC 首页 + 数据看板 + 手机端 /m + REST/WS）
-                                    # 默认同时监听 HTTP 8080 与 HTTPS 8443（手机实时模式）
-python api_server.py --no-https     # 只跑 HTTP：手机只能用拍照模式，不能调手机摄像头
+1. `Run → Edit Configurations… → + → Python`
+2. 按下面填：
+
+   | 字段 | 值 |
+   | --- | --- |
+   | Name | `CropGuard 服务器` |
+   | Script path | `<仓库>\api_server.py` |
+   | Parameters | 留空（默认 8080/8443）；换端口写 `--port 8080` |
+   | Working directory | `<仓库根目录>`（**必须是根目录**，配置/模型都是相对路径） |
+   | Python interpreter | 带 torch 的那个（3.14 或 pest-gpu） |
+   | Environment variables | `CG_DEVICE=cpu`（有显卡可不填） |
+   | 勾选 | *Emulate terminal in output console* |
+
+3. `Shift+F10` 运行；日志在下方 Run 窗口；`Shift+F9` 可断点调试；红色方块停止。
+
+**C. 命令行**
+
+```powershell
+$env:CG_DEVICE='cpu'; py -3.14 api_server.py     # 服务（HTTP 8080 + HTTPS 8443）
+py -3.14 api_server.py --no-https                # 只跑 HTTP（手机只能用拍照模式）
+py -3.14 main.py                                 # 桌面 GUI（与服务器二选一，别同时占相机）
 ```
 
-启动后终端会直接打印**手机入口地址 + 看板地址**，例如：
+### 2.3 启动后先看这几行
 
 ```
-数据看板: http://127.0.0.1:8080/dashboard
-[INFO] Spray transport=http available=True
-[INFO] 雾化节点(mist)=[...] 持续模式兜底=300s
-手机会话页(唯一入口): https://10.30.129.219:8443/m
+[INFO] 摄像头：camera_device=vid_0c45 camera_num=0 → 使用 'vid_0c45'（按设备标识解析…）
+[INFO] Spray transport=http available=True protocols={'g1': 'mist'}
+[INFO] 雾化节点(mist)=['http://<节点IP>'] 持续模式兜底=300s
+[CERT] ✅ SAN 已覆盖当前局域网 IP: <本机IP>
+手机会话页(唯一入口): https://<本机IP>:8443/m
+语音: engine=powershell ready=True
 ```
 
-**手机端只有一个地址**：`https://<本机IP>:8443/m`（实时摄像头 / 拍照 / 问答 / 雾化都在这一页）。
-用 `http://<本机IP>:8080/m` 打开会**自动升到同一个页面**（不想升级就加 `?http=1` 留在 HTTP 拍照模式）。
-首次打开会提示"不是私密连接"，选「高级 → 继续前往」即可（自签证书；证书会自动按当前 IP 重签，
-换热点/换网段后不用手动处理）。`/api/lan` 会返回 `https_enabled` 与 `phone_url`，
-HTTPS 没起来时页面**不会**给出打不开的 https 链接。
+缺谁补谁，见[常见问题](#16-常见问题)。
 
-**演示数据看板**（`/dashboard`，答辩/PPT 用）：一屏给出 mAP 收敛曲线、27 类每类指标、
-20 张真实样本实测（含缩略图与单张耗时）、闭环与 RAG 评测口径、硬件拓扑，以及实时态下的
-模型/相机/语音/雾化节点状态与实时画面。
+### 2.4 权重与数据（不在仓库里的东西）
 
-* 想**离线单文件**看：直接用浏览器打开 `serve/pages/dashboard.html`（数据是内联快照，零联网请求）；
-* 想**看实时**：先起服务，再开 `http://127.0.0.1:8080/dashboard`（实时态必须同源，file:// 会被浏览器拦跨域）；
-* 快照数据来自真实产物，重新生成：`py -3.14 scripts/build_dashboard.py`（只改写页面里的标记区，
-  手写的结构/样式/脚本原样保留）。看板**只读**：不提供喷淋/雾化启停按钮，避免演示误触发硬件。
-
-PC 浏览器打开 `http://127.0.0.1:8080/` 首页，页面下方会显示手机入口的**二维码（手写实现，无额外依赖）**，
-手机扫码即可进入 `/m`，不用手输 IP。
-
-> 模型权重已内置在 `runs/train/pest27_final4/weights/best.pt`，**无需下载任何模型**。
-> ⚠️ GUI 与服务器**不要同时打开同一个 USB 相机**（Windows 下设备独占）；现场演示只开一个，推荐开服务器。
+| 资源 | 位置 | 说明 |
+| --- | --- | --- |
+| 检测权重 `best.pt` | `runs/train/pest27_final4/weights/best.pt` | **运行时必需**，随仓库提供 |
+| ONNX 导出件 | `runs/.../best.onnx`、`睿抗国赛项目—株得/best.onnx` | 平台提交用（480 会失败，必须 640） |
+| EdgeJev 模型 | `edge_models/jev-int8/`（369MB） | **不入库**；换机整目录拷贝或跑 `scripts/build_edge_model.py` |
+| 比赛 20 图 | `pictures20/` | 不入库；看板/彩排要用 |
+| 真实测试集 | `real_testset20/` | 不入库；`scripts/eval_real_testset.py` 评测用 |
+| 训练集 | `dataset_full/` | 不入库；只有重训才需要 |
 
 ---
 
-## 3. 现场手册（比赛/演示当天照这个做）
+## 3. 页面地图
 
-### 3.1 起服务
+| 路径 | 页面 | 一句话 |
+| --- | --- | --- |
+| `/demo` | **演示指挥台**（原生深色） | 一个页面串三套演示 + 十项自检，双击启动默认打开 |
+| `/` | **检测台**（Vue） | 图片 / 文件夹 / 视频 / 摄像头 / 手机 五种输入 + 结果 + 建议 |
+| `/eval` | **现场评分**（Vue） | 同一个检测台的「评分作业」模式：拍照 → 判分 → 30 分 → 导出 CSV |
+| `/stream` | **实时监测**（Vue） | 定点监控 + 自动/手动喷洒总闸 + 风险时间线 |
+| `/ask` | 农技问答 | RAG + 防幻觉，库外问题明确拒答 |
+| `/spray` | 喷淋控制 | 节点状态、手动喷淋、雾化卡片、一句话控制 |
+| `/system` | 设备与接入 | 局域网地址/二维码、相机状态、接口清单 |
+| `/dashboard` | 数据看板 | 离线能力快照（训练/验证/评测），不是现场成绩 |
+| `/dashboard-offline` | 离线看板 | 单文件快照，`file://` 可开 |
+| `/m` | **手机端**（Vue） | 拍照/实时识别、问答、喷洒、记录；HTTP 打开会自动升 HTTPS |
+| `/edge` | EdgeJev | 选择题式：指令解析 / 决策点规划 |
+| `/classic` `/eval-classic` `/m-classic` | 原生兜底页 | 前端出问题时的后路 |
 
-```bash
-# 1) 拉起本地大模型（缺了不影响检测，但问答会降级为知识库原文）
-ollama serve
+---
 
-# 2) 起服务（默认已同时开 HTTP 8080 + HTTPS 8443；要纯 HTTP 用 --no-https）
-python api_server.py
+## 4. 三套演示
+
+### ① 20 个实体样本 · 180 秒（计分）
+
+打开 `/eval` → 摄像头画面 → 标本摆好 → 点「**拍照并记录（n/20）**」→ 评委判 ✓/✗ → 满 20 张自动停表 → 「导出 CSV」。
+细节见[第 5 节](#5-评分系统20-样本--180-秒)。
+
+### ② 定点监控 → 自动喷洒
+
+`/stream`（或 `/demo` 第二张卡的「开始定点监控」）→ 放 3–5 只大体型虫 → 1–2 秒内风险变「高风险」→ 自动喷 + 语音 + 联动记录。
+**自动喷洒总闸**可随时关（关掉只播语音不喷），手动按钮不受影响。
+
+### ③ 手机 → 大模型 → 决策 → 手动喷洒
+
+手机扫码进 `/m` → 拍照/实时识别 → 问「这个虫怎么防治？」→ 说「给 A 片区喷 3 秒」→ 解析 → **人工确认** → 设备动作。
+
+### 幕间硬约束
+
+- **相机独占**：同一时刻只能有一个程序用相机（网站、GUI、微信）。切演示前先关掉上一个。
+- 换页面不用改配置；改配置要重启服务（除 `/demo` 里的「节点地址」是热更新）。
+
+---
+
+## 5. 评分系统（20 样本 / 180 秒）
+
+**口径**（与桌面 GUI 共用同一份纯函数 `app/eval_score.py`，测试钉死）：
+
+- 准确度 20 分 = min(正确数, 20) × 1 分
+- 时效性 10 分 = 10 − max(0, 用时 − 180s) × 0.5
+- **未评判不计入正确**（只少分，不会被误判成对）
+- 满分 30 分；`/api/eval/score` 返回实时分数
+
+**作业规则**（照搬 GUI）：
+
+| 规则 | 说明 |
+| --- | --- |
+| 只有"采集"算样本 | 拍照 / 图片 / 文件夹 / 显式抓帧；**实时预览与视频连续帧不写样本** |
+| 没检出目标不写行 | 该张标为「未检出·不计分」，不影响得分 |
+| 一次采集 = 一条 | 不做同目标合并，每张都要评委单独判 |
+| 计时起点 | **按下快门那一刻**（第一张样本） |
+| 停表 | 满 20 张自动停；也可点「结束本轮」 |
+| 超过 20 张 | 分数只计前 20 张，其余仍可检测 |
+
+**产物**：
+
+- 带框快照：`output/snapshots/eval_*.jpg`（与 GUI 同目录），页面可点开回看
+- 评分报告：`output/eval_reports/eval_report_web_*.csv`（逐样本 + 汇总）
+- 没相机时彩排：`/eval` 里点「从服务器载入」直接读 `pictures20/`
+
+---
+
+## 6. 实时监测与自动喷洒
+
+- 画面：服务器相机 → `/ws/stream` 推原始帧 + 检测框，前端叠框，多客户端共享同一路采集。
+- 自动：`app/inference.py` 的推理泵对**高/中风险**调 `_linkage` → 按 `SPRAY.risk_map` 下发，受总闸 `AUTO_SPRAY_ENABLED` 控制。
+- 手动：`/api/spray {group, duration}`；停止 `/api/spray/stop`；单次时长被 `SPRAY.max_duration`（默认 5s）钳制。
+- 边界：**评分页不触发喷洒**（`/api/detect` 不调 `_linkage`），只有实时监测/手机实时会联动。
+
+---
+
+## 7. 手机端
+
+- 唯一入口：`https://<本机IP>:8443/m`（HTTP 打开会自动升级；不想升级加 `?http=1`）。
+- 首次提示"不是私密连接" → 「高级 → 继续前往」（自签证书，按当前 IP 自动重签）。
+- HTTPS 没起来时页面会明说原因，**不会给死链**；拍照模式在 HTTP 下照常可用。
+- 能力：拍照识别、实时识别（`/ws/phone` 上传帧，本地叠框）、问答、喷洒（含雾化卡片）、联动记录。
+- 断线自动重连；切到后台自动停流省电。
+
+---
+
+## 8. AI 问答与防幻觉
+
+- 只走**本地 Ollama**（`http://127.0.0.1:11434`，默认 `qwen2.5:7b`）；没装也能跑，降级为知识库原文。
+- 四道闸：召回分数 < `CHAT.refuse_below` 直接拒答 → 接地提示词只许用给定片段 → temperature=0.2 + 固定 seed → 后校验编造药名/剂量。
+- 输出带 `citations`（依据）与 `source`；问答留痕 `output/qa_history.jsonl`。
+- 示例：问「今天天气怎么样」→ **"知识库未涵盖该问题，我不做推测性回答。"**
+
+---
+
+## 9. EdgeJev 本地决策
+
+- 位置：`edgejev/`（上游 yzfly/edgejev，Apache-2.0）+ 适配层 `app/edge_engine.py` + `edge_models/jev-int8/`（ONNX int8，CPU）。
+- 定位：**类型化决策/意图解析**（13 类 intent），只"听懂 + 给建议"，**不直接驱动硬件**。
+- 入口：`POST /api/ask_command`（规则优先，规则拿不准才调它）、`/edge` 页面、`/api/edge/*`；手机/网页的"一句话控制"也会用到。
+- **完全离线**，不联网。
+- 口径：零样本能力弱，演示只用固定 3 条——「把泵关了吧」「给片区A喷3秒」「一直喷不要停」。
+
+---
+
+## 10. 数据看板（口径要分清）
+
+看板是**离线证据板**，不是现场成绩。数据由 `scripts/build_snapshot.py` 生成 `output/dashboard/snapshot.json`，`/dashboard` 只负责画：
+
+| 区块 | 来源 | 回答的问题 |
+| --- | --- | --- |
+| 训练收敛 | `runs/.../results.csv` | 训练过程是否正常 |
+| 逐类 mAP | 验证集逐类指标 | 27 类各自什么水平 |
+| 实拍样本 | `pictures20/`（20 张，文件名带真实类别） | 比赛 20 图 Top1 命中率（当前 20/20，平均 78.7ms） |
+| RAG 评测 | `scripts/ask_eval.py` 产物 | 域内召回、域外拒答、越权拦截 |
+| 测试/联动/实时态 | 测试套件 / config / 设备探测 | 系统当下是否就绪 |
+
+> ⚠️ 现场拍摄的 20 张**不进看板**，它们只进 `/eval` 的评分与 CSV。答辩时把两套口径分开讲。
+
+---
+
+## 11. 27 类害虫对照表
+
+| # | 英文类别 | 中文 | 通俗叫法 | # | 英文类别 | 中文 | 通俗叫法 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | Cicadellidae | 叶蝉科 | 浮尘子 | 14 | flea_beetle | 跳甲 | 菜蚤 |
+| 1 | Miridae | 盲蝽科 | — | 15 | tarnished_plant_bug | 花盲蝽 | 美洲牧草盲蝽 |
+| 2 | blister_beetle | 芫菁 | 斑蝥 | 16 | black_cutworm | 黑切叶虫 | 黑地老虎 |
+| 3 | aphids | 蚜虫 | 腻虫 | 17 | Ampelophaga | 葡萄天蛾 | 葡萄天蛾 |
+| 4 | mole_cricket | 蝼蛄 | 土狗子 | 18 | peach_borer | 桃蛀螟 | 桃蠹螟 |
+| 5 | Locustoidea | 蝗虫 | 蚂蚱 | 19 | lytta_polita | 丽缘红姬甲 | 绿芫菁近缘 |
+| 6 | corn_borer | 玉米螟 | 玉米钻心虫 | 20 | cabbage_army_worm | 甘蓝夜蛾 | — |
+| 7 | wireworm | 金针虫 | 叩头虫幼虫 | 21 | alfalfa_plant_bug | 苜蓿盲蝽 | — |
+| 8 | legume_blister_beetle | 豆类芫菁 | 豆斑蝥 | 22 | army_worm | 粘虫 | 行军虫 |
+| 9 | grub | 蛴螬 | 金龟子幼虫 | 23 | Potosiabre_vitarsis | 光肩星天牛 | 天牛 |
+| 10 | flax_budworm | 亚麻蕾虫 | — | 24 | Cicadella_viridis | 绿蝉 | 大青叶蝉 |
+| 11 | Prodenia_litura | 斜纹夜蛾 | 莲纹夜蛾 | 25 | yellow_cutworm | 黄切叶虫 | 黄地老虎 |
+| 12 | beet_army_worm | 甜菜夜蛾 | 贪夜蛾 | 26 | rice_leaf_roller | 水稻卷叶螟 | 稻纵卷叶螟 |
+| 13 | Lycorma_delicatula | 斑衣蜡蝉 | 花蹦蹦 |  |  |  |  |
+
+**挑样本/买标本的建议**：
+
+- mAP50 **≥0.95 的 8 类**最稳：斑衣蜡蝉 .995 / 蝼蛄 .9946 / 叶蝉科 .9856 / 水稻卷叶螟 .9842 / 光肩星天牛 .9803 / 跳甲 .9715 / 蛴螬 .9627 / 葡萄天蛾 .9506。
+- 体型大、纹理独特最好拍：蝼蛄、斑衣蜡蝉、葡萄天蛾、蛴螬、水稻卷叶螟、黑切叶虫。
+- 同科易混（同场最多留 1–2 只）：叶蝉 ↔ 绿蝉；盲蝽 ↔ 花盲蝽 ↔ 苜蓿盲蝽；芫菁 ↔ 豆类芫菁 ↔ 丽缘红姬甲；螟蛾一家。
+- ⚠️ 两个已知坑别选：蝗虫（mAP50 仅 .66，且样本标签有误）、`Potosiabre_vitarsis`（中文名光肩星天牛，图像更像花金龟，标签可疑）。
+
+---
+
+## 12. 系统架构
+
 ```
-
-看日志里的关键信息，缺谁补谁：
-
-```
-[INFO] 相机 ... backend=dshow size=1280x720      # 相机通了
-[TTS] 后端就绪 engine=...                        # 语音通了
-[INFO] Spray transport=http available=True       # 喷洒链路通了
-[INFO] Spray transport/http_targets...           # 喷淋目标与协议（json/mist）
-[INFO] 雾化节点(mist)=[...] 持续模式兜底=300s      # 雾化节点
-[CERT] ✅ SAN 已覆盖当前局域网 IP: 10.30.129.219   # 证书覆盖了这个 IP 才能手机访问
-手机会话页(唯一入口): https://<本机IP>:8443/m      # 手机地址（唯一）
-```
-
-若 HTTPS 没起来，横幅会写明原因（`--no-https` / 证书不可用 / 8443 被占用），
-并提示"手机实时模式不可用，拍照模式照常"——**不会**再给出打不开的 https 地址。
-
-### 3.2 三张处置卡
-
-| 现场状况 | 一句话处理 |
-| ---- | ---- |
-| **相机打不开 / 画面卡住** | `python tool/camera_probe.py` 重认索引 → 改 `CONFIG.camera_num`；运行中卡死看 `GET /api/camera/health`，必要时 `POST /api/camera/restart` 强制重开。注意别让 GUI 和服务器同时占相机。 |
-| **手机实时模式起不来** | 必须用 `https://<IP>:8443/m`（`getUserMedia` 要求安全上下文，HTTP 页面浏览器不给摄像头）；首次点「高级 → 继续前往」信任自签证书；实在不行**退回拍照模式**（HTTP 也能用），演示不会空场。查 `GET /api/lan` 的 `https_enabled` 与启动日志里 HTTPS 是否就绪。 |
-| **语音不响** | 看启动日志 `[TTS] 后端就绪 engine=?`：本机实测 `SAPI.SPVoice` 不可用、`System.Speech`（powershell 后端）可用，auto 会自动选后者。若显示 `无可用语音后端`，用 `GET /api/feedback/status` 看 `init_errors`。 |
-
-### 3.3 演示动线（建议 3 分钟）
-
-0. 【暖场】打开 `http://127.0.0.1:8080/dashboard` → 一屏给出 mAP 曲线 / 27 类指标 / 20 张实测 / 闭环与 RAG 口径；
-   接着点「启动实时画面」看实时检测与喷淋状态（无相机时它会给出可读原因，不会白屏）；
-1. PC 首页上传一张样本图 → 显示检测框 + 风险 + 知识库建议；
-2. 手机扫码进 `/m` → 拍照识别 → 结果回到手机；
-3. 手机点"实时模式"（HTTPS）→ 手机画面实时上传识别，**检测框直接叠在手机画面上**（中文名 + 置信度），
-   下方状态条显示目标数/风险/服务端耗时/往返延迟/FPS；可随时切前后摄像头、隐藏检测框、放大、截图（带框）；
-4. 手机提问"蚜虫怎么防治"→ 回答带"依据"；再问"今天天气怎么样"→ **明确拒答**（这就是防幻觉的证据）；
-5. 手机输入"给 A 片区喷 3 秒"→ 解析 → 点确认 → 继电器动作 + 语音播报"已给片区A喷淋3秒"。
-
-### 3.4 先跑一遍自检（强烈建议）
-
-```bash
-python tests/run_tests.py     # 60 个用例：检索/防幻觉/指令安全/语音队列/相机采集
-python scripts/ask_eval.py    # RAG 评测：库内召回率、库外拒答率、越权拦截率
+摄像头 / 手机 / 图片
+        │
+        ▼
+   FastAPI 服务（8080 HTTP + 8443 HTTPS）
+        ├── YOLOv8s 27 类检测（CPU 100–250ms/张）→ 风险评估 assess_risk
+        ├── Web 前端 web/dist（Vue3，离线打包）：/ /eval /stream /ask /spray /system /dashboard /m
+        ├── 原生页：/demo 指挥台 · /edge · /classic /eval-classic /m-classic（兜底）
+        ├── 本地决策 EdgeJev（ONNX，规则优先）
+        ├── RAG 问答（Ollama + 知识库 + 防幻觉）
+        └── 执行层 HTTP → ESP32 节点（mist: /start?time=N；json: /spray）
 ```
 
 ---
 
-## 4. 手机端 / 服务器 / GUI 的接口一览
+## 13. 配置说明（`config/configs.yaml`）
 
-| 接口 | 说明 |
-| ---- | ---- |
-| `GET /` | PC 演示页（上传检测 + 建议 + 手机入口二维码） |
-| `GET /m` | **手机端主页**：拍照识别 / 实时识别（画面自带检测框叠层）/ 提问 / 喷洒 / 雾化 / 历史 |
-| `GET /stream` | 手机监测页（旧版，保留兼容） |
-| `POST /api/detect` | 上传图片检测（multipart）→ 带框结果图 + 风险 + 知识库建议 |
-| `WS /ws/stream` | 服务器相机实时流（共享采集源，多客户端可同时看） |
-| `WS /ws/phone` | **手机上传二进制 JPEG 帧 → 回检测 JSON**（不回图，省流量；检测框由手机页 canvas 自己叠，见 `serve/static/mobile.js` 的 `drawDetections`） |
-| `POST /api/ask` | 自由问答（RAG + 防幻觉）：返回 `answer` / `citations` / `guard` |
-| `GET /api/kb/search?q=` | 只做检索：现场展示召回片段与分数 |
-| `POST /api/ask_command` | 自然语言 → 喷洒意图（**默认只解析，需人工确认**） |
-| `POST /api/spray` | 手动喷洒（`{"group":"g1","duration":3,"via":"phone"}`） |
-| `GET /api/camera/health` | 相机状态 / 帧龄 / 自愈次数 / 实测 fps |
-| `POST /api/camera/restart` | 强制重开相机（现场抢救） |
-| `GET /api/feedback/status` | 语音与串口状态（排查"到底响不响"） |
-| `GET /api/history` | 联动/喷洒历史（含来源通道） |
-| `GET /qr?url=` | 生成二维码 PNG（入口地址） |
+| 配置段 | 关键项 | 说明 |
+| --- | --- | --- |
+| `MODEL` | `WEIGHT` / `DEVICE` / `CONF` / `IMGSIZE` | 权重、设备（`cuda:0`/`cpu`）、阈值、640 |
+| `CONFIG.camera_device` | `'vid_0c45'` | **优先**：按设备标识选相机（索引会重排，标识不会） |
+| `CONFIG.camera_num` | `0` | 兜底索引（仅在 `camera_device` 留空时生效） |
+| `CAMERA` | `probe_timeout: 12.0` | 打开后等首帧秒数；外接 USB 冷启动实测 7.4s，别调小 |
+| `SPRAY` | `transport: http` + `http_targets` | 节点地址/协议（`mist` 手写 sketch，`json` 项目固件） |
+| `SPRAY.max_duration` | `5` | 单次喷淋上限（雾化片怕连烧） |
+| `SPRAY.direct_max_sec` | `300` | 「持续喷雾」时服务器兜底关闭秒数 |
+| `EVAL` | `target_samples: 20` / `time_limit_sec: 180` | 评分口径 |
+| `PHONE` | `https_port: 8443` | 手机 HTTPS 端口（与 8080 同时监听） |
+| `EDGE` | `mode: 'local'` | EdgeJev 本地推理 |
+
+**现场改喷淋节点地址不用改 YAML**：`/demo` 第二张卡「节点地址」→ 保存并应用 → 热更新并落 `config/spray_targets.local.json`（启动时优先于 YAML，不入库）。
 
 ---
 
-## 5. 模型说明
-
-| 项目 | 内容 |
-| ---- | ---- |
-| 网络 | YOLOv8s（含可选 SE 注意力变体） |
-| 类别数 | 27 类农作物害虫 |
-| 输入尺寸 | **imgsz = 640**（部署平台强制要求，480 会失败） |
-| 最佳权重 | `runs/train/pest27_final4/weights/best.pt` |
-| ONNX | `睿抗国赛项目—株得/best.onnx`（平台部署用；2026-10-08 清理时删掉了 `runs/` 下的重复副本，两份 SHA256 相同。若要随开源仓库发布，需对该文件 `git add -f`） |
-
-**27 类名称**（`dataset_full/data.yaml` 中定义，`configs.yaml` 的 `chinese_name` 提供中文映射）：
-
-```
-叶蝉科、盲椿科、芫菁、蚜虫、蝼蛄、蝗虫、玉米螟、金针虫、豆类芫菁、
-蛴螬、亚麻蕾虫、斜纹夜蛾、甜菜夜蛾、斑衣蜡蝉、跳甲、花盲蝽、
-黑尾切叶虫、葡萄天蛾、桃蛀螟、丽缘红姬甲、甘蓝夜蛾、苜蓿盲蝽、
-草地螟、光肩星天牛、绿蝉、黄切叶虫、水稻卷叶螟
-```
-
----
-
-## 6. 目录结构
+## 14. 目录结构
 
 ```
 yolov8/
-├─ main.py                   # GUI 主程序（检测 + 语音 + 大模型问答）
-├─ UI.py                     # Qt 界面类（含问答输入区）
-├─ api_server.py             # FastAPI 服务：PC 页 / 手机页 / REST / WebSocket / HTTPS
-├─ config/
-│  ├─ configs.yaml           # 主配置（模型/设备/UI/AI/相机/语音/RAG/手机端）
-│  └─ certs/                 # HTTPS 自签证书（启动时自动生成；SAN 不覆盖当前 IP 会自动重签）
-├─ serve/
-│  ├─ mobile.py              # 手机端页面（/m）HTML
-│  └─ pages/
-│     ├─ index.html          # PC 首页（上传识别）
-│     ├─ dashboard.html      # ★ 演示数据看板（/dashboard；内联快照，可离线单文件打开）
-│     └─ stream.html         # 实时监测页
-├─ scripts/
-│  ├─ build_dashboard.py     # ★ 生成看板快照（只改写 dashboard.html 的标记区）
-│  ├─ per_class_val.py       # 每类验证指标（看板数据来源之一）
-│  └─ eval_real_testset.py   # 20 张真实样本实测（看板数据来源之一）
-├─ tool/
-│  ├─ camera_source.py       # ★ 共享相机采集 + 看门狗自愈（GUI/服务器/手机共用）
-│  ├─ camera_probe.py        # 摄像头索引探针（现场排查用）
-│  ├─ camera_detect.py       # 独立命令行识别工具
-│  ├─ gen_cert.py            # 自签 HTTPS 证书生成（调 Miniconda 自带 openssl）
-│  ├─ qr_min.py              # 手写二维码生成（纯 PIL，零依赖）
-│  └─ tools.py               # 绘制/结果格式化/风险分级
-├─ llm/
-│  ├─ ai_gateway.py          # ★ AI 唯一出入口：检索→接地提示词→Ollama→后校验
-│  ├─ retriever.py           # ★ TF-IDF 字符 n-gram 检索（RAG 召回）
-│  ├─ kb_chunks.py           # 知识分块（由 knowledge_base.py 程序化生成）
-│  ├─ guard.py               # ★ 防幻觉守卫（编造药名/剂量检测 + 安全提示）
-│  ├─ knowledge_base.py      # 27 类害虫知识库
-│  └─ local_llm.py           # Ollama 客户端
-├─ feedback/
-│  ├─ tts.py                 # ★ 离线语音引擎（专用线程 + 多后端真校验兜底）
-│  ├─ feedback.py            # 播报语义（事件驱动 + 最新优先）
-│  └─ spray.py               # 喷洒控制器（serial/http/mqtt + stop）
-├─ prompts/templates/
-│  └─ grounded_expert.txt    # 接地提示词（取代原 1500 字"报告型"提示词）
-├─ scripts/ask_eval.py       # RAG + 防幻觉评测（答辩举证）
-├─ tests/                    # 测试（内置迷你框架，零依赖；兼容 pytest）
-├─ ESP32/                    # 喷洒节点 / 声光报警固件（PlatformIO，见 ESP32/README.md）
-├─ dataset_full/             # 27 类数据集（训练用）
-└─ 睿抗国赛项目—株得/       # 竞赛 PPT 与规则文档
+├─ api_server.py              # FastAPI 服务：页面 + REST + WS + HTTPS
+├─ main.py / UI.py            # 桌面 GUI（评分/检测/语音/问答）
+├─ 启动演示系统.bat ...        # 现场双击入口
+├─ config/configs.yaml        # 主配置
+├─ app/                       # 共享状态、推理、风险评估、评分口径、快照、Edge 适配
+├─ serve/                     # SPA 托管 + 演示指挥台 + 原生兜底页 + 手机/评分模板
+├─ web/                       # Vue3 前端源码（src）与构建产物（dist，现场直接用）
+├─ tool/                      # 相机采集/探针、证书、二维码、绘制与风险工具
+├─ llm/                       # RAG 检索、防幻觉、知识库、Ollama 客户端
+├─ feedback/                  # 语音、执行反馈、喷淋控制器
+├─ edgejev/                   # EdgeJev 决策引擎（Apache-2.0）
+├─ scripts/                   # 看板快照、离线看板、Edge 构建、评测、令牌同步
+├─ tests/                     # 自检（迷你框架，零依赖，兼容 pytest）
+├─ ESP32/                     # 喷洒节点/声光报警固件（PlatformIO）
+├─ docs/                      # 答辩大纲 · Docker 方案 · 标本采购单（翻拍续训/验收用）
+├─ pictures20/ real_testset20/ # 样本（不入库）
+└─ runs/ output/              # 权重与运行产物（截图/报告/看板快照）
 ```
 
 ---
 
-## 7. 配置说明（`config/configs.yaml`）
+## 15. 测试与自检
 
-| 配置段 | 关键项 | 说明 |
-| ------ | ------ | ---- |
-| `MODEL.WEIGHT` | `./runs/train/pest27_final4/weights/best.pt` | 推理权重路径 |
-| `MODEL.DEVICE` | `'cuda:0'` / `'cpu'` | 推理设备，无显卡改 `'cpu'` |
-| `MODEL.CONF` / `IMGSIZE` | `0.4` / `640` | 置信度阈值 / 推理分辨率 |
-| `CONFIG.camera_num` | `1` | 摄像头索引（用 `tool/camera_probe.py` 确认） |
-| `CAMERA.backend` | `'auto'` | 优先 DirectShow（MSMF 长跑易卡死） |
-| `CAMERA.stale_sec` | `2.0` | 多久没新帧就判"卡死"并换 handle |
-| `CAMERA.infer_fps` / `stream_fps` | `5` / `15` | 推理节奏 / 推流节奏（解耦） |
-| `FEEDBACK.tts.engine` | `'auto'` | win32com → pyttsx3 → powershell 自动挑能出声的 |
-| `FEEDBACK.speak_interval` | `3` | 同状态复读间隔（状态一变立刻播） |
-| `SPRAY.transport` | `'http'` | 节点直连（方案甲）；`http_targets` 填节点 IP |
-| `SPRAY.max_duration` | `5` | 单次喷洒上限（雾化片怕连烧，固件再钳一次，默认 5 秒） |
-| `CHAT.refuse_below` | `0.18` | 检索分数低于此值**拒绝生成**（防幻觉硬闸门） |
-| `RAG.retriever` / `top_k` | `'tfidf'` / `4` | 召回实现与条数（预留 `embedding` 升级位） |
-| `PHONE.https_port` | `8443` | HTTPS 端口，与 8080 同时监听（默认开；`--no-https` 关掉） |
-
----
-
-## 8. 离线大模型与防幻觉（重点）
-
-国赛要求**离线运行、禁止调用外部在线推理**，因此只走本地 Ollama：
-
-- 服务地址：`http://127.0.0.1:11434`，模型 `qwen2.5:7b`（见 `llm/local_llm.py`）
-- 不装 Ollama 也能跑：自动降级为**知识库原文**，来源标注清楚，不会静默乱答
-
-**防幻觉做了四道闸**（实现见 `llm/ai_gateway.py` / `llm/guard.py`）：
-
-1. **召回闸门**：检索最高分 < `CHAT.refuse_below` 时**连大模型都不调**，直接返回统一拒答话术；
-2. **接地提示词**：`prompts/templates/grounded_expert.txt` 只允许用给定片段作答，禁止编药名剂量
-   （旧的"生成 1500 字报告"提示词是幻觉根源，已废弃）；
-3. **参数约束**：`temperature=0.2` + 固定 `seed`（同问同答，演示可复现）、`num_predict=400`；
-4. **后校验**：`llm/guard.py` 扫描回答里的农药名与剂量，**片段里没有的一律标注"请核实"**，
-   输出始终带 `citations`（依据）与 `source`（来源）。问答留痕写在 `output/qa_history.jsonl`。
-
-一条真实输出示例（`POST /api/ask {"question":"蚜虫怎么防治"}`）：
-
-```
-- 蚜虫主要危害棉花、小麦、蔬菜、果树等多种作物。
-- 发现初期虫量上升即进入防治窗口，优先采用农业与物理措施，如黄板诱杀有翅蚜、银灰膜避蚜。
-- 化学防治需按当地植保部门推荐药剂与安全间隔期执行，药剂选用吡虫啉、啶虫脒等。
-依据：蚜虫的防治措施,蚜虫的监测与预防
-（安全提示：…喷洒动作需人工确认后执行。）
+```powershell
+py -3.14 tests/run_tests.py            # 全量自检：270 passed / 0 failed（含真模型冒烟）
+py -3.14 tests/run_tests.py camera_pick  # 只跑名字匹配的用例
+py -3.14 scripts/ask_eval.py           # RAG 评测：库内召回 20/20、库外拒答 10/10、越权拦截 4/4
+py -3.14 tool/camera_check.py          # 相机问题第一站：枚举 + 索引×后端×格式 + 结论
+py -3.14 tool/port_check.py            # 端口/Ollama 自检
 ```
 
-而问"今天天气怎么样"时返回：**"知识库未涵盖该问题，我不做推测性回答。"**
+前端改动后必须重建（现场无 Node）：
 
-> 知识库内容目前是"通用植保框架"，比赛前应逐条对照权威资料校对（`llm/knowledge_base.py`）。
-
----
-
-## 9. 喷洒联动与安全边界
-
-- **自动联动**：中/高风险 → 按 `SPRAY.risk_map` 的片区/时长下发（多路相机按片区定向），同时语音播报；
-- **手动/手机**：`POST /api/spray`，手机端有二次确认弹窗；
-- **自然语言指令**：`POST /api/ask_command` 只做**意图解析 + 白名单校验**（分组、时长钳制、危险词拦截），
-  必须人工点"执行"才真正下发 —— **大模型的自由文本永远不直接驱动硬件**；
-- **双重上限**：后端 `SPRAY.max_duration`（默认 5 秒）+ 固件 `-DMAX_SPRAY_SEC=5`，雾化片不会连续通电。
-
-安全测试：`tests/test_intent.py` 覆盖"必须指定片区/时长钳制/危险词拒绝"，`scripts/ask_eval.py` 输出拦截率。
-
----
-
-## 10. 训练（可选，二次开发用）
-
-```bash
-python train_640.py           # 新建训练（以 yolov8s.pt 为预训练）
-python train_640.py --resume  # 断点续训（从 pest27_final4 的 last.pt）
+```powershell
+cd web; npm install; npm run build     # 产物落 web/dist，随仓库提交
+py -3.14 scripts/sync_tokens.py        # 设计令牌同步给原生页
 ```
 
-- 数据：`dataset_full/data.yaml`（27 类，train/val 划分）
-- 翻拍续训（模拟比赛打印+摄像头场景的增强）：`train_finetune.py`
-- Windows 下训练脚本必须用 `if __name__ == '__main__':` 包起来（multiprocessing）
+---
+
+## 16. 常见问题
+
+| 现象 | 处理 |
+| --- | --- |
+| 相机打不开 | 先 `tool/camera_check.py`；确认没被 GUI/微信/其它标签占用；外接 USB 首次要等 7–15 秒 |
+| 报"能打开但 N 秒内没出画面" | USB 带宽/曝光预热问题：换 USB 口（别用扩展坞）或调大 `CAMERA.probe_timeout` |
+| 8080 被占用 | `py -3.14 tool/port_check.py --kill`，或换端口 `--port 8090` |
+| 手机打不开页面 | 手机和电脑必须同一 WiFi/热点；用启动横幅打印的 IP |
+| 手机实时模式起不来 | 必须 HTTPS；首次点「高级 → 继续前往」；HTTPS 没起来就用拍照模式 |
+| 语音不响 | 看 `/api/feedback/status` 的 `tts.init_errors`；auto 会挑能出声的后端 |
+| 喷淋节点显示离线 | 看 `/demo` 节点地址是否还是占位 IP（`172.23.153.231`）；手写 sketch 没有 `/status`，探活走 `/` |
+| 看板空白 | 先 `py -3.14 scripts/build_snapshot.py --samples pictures20` |
+| 页面白屏 | 用 `/classic`、`/eval-classic`、`/m-classic` 兜底，或重启服务 |
+| 中文乱码 | 控制台 `chcp 65001`；页面不受影响 |
 
 ---
 
-## 11. 常见问题（FAQ）
+## 17. 已知问题（v0.1）
 
-| 现象 | 解决 |
-| ---- | ---- |
-| 报错 `CUDA ... not available` | 把 `MODEL.DEVICE` 改 `'cpu'` |
-| 摄像头打不开 | `python tool/camera_probe.py` 重认索引 → 改 `CONFIG.camera_num`；确认没被其他程序（含 GUI）占用 |
-| 画面"跑一会就卡死" | 已由 `tool/camera_source.py` 的看门狗处理；仍卡就 `POST /api/camera/restart`，并看 `/api/camera/health` |
-| 多个手机同时看实时流报"打不开相机" | 已修：`/ws/stream` 改为共享采集源；若日志仍报设备忙，说明是别的程序占着相机 |
-| 语音只响第一次 | 已修（`feedback/tts.py` 专用线程 + COM 修复）。若日志显示 `无可用语音后端`，看 `/api/feedback/status` 的 `init_errors` |
-| 手机实时模式打不开摄像头 | 用 `https://<IP>:8443/m`（HTTPS 默认已开）并首次点「高级 → 继续前往」信任自签证书；`/api/lan` 的 `https_enabled` 为 false 说明 HTTPS 没起来（看启动横幅的原因） |
-| 手机打不开页面 | 手机与服务器需在同一 WiFi/热点网段；用启动横幅打印的"手机会话页(唯一入口)"那个 IP |
-| 手机提示"证书名称不符 / 连接不是私密连接" | 证书 SAN 没覆盖手机在用的那个 IP：重启服务（会自动重签）或 `python tool/gen_cert.py --force`；手机走别的网段时加 `--cert-extra-ip <IP>` |
-| 8443 被占用（HTTPS 没起来） | `python tool/port_check.py --kill`，或换端口 `--https-port 8444` |
-| 大模型回答"知识库未涵盖" | 这是**设计行为**（防幻觉）：该问题超出 27 类害虫知识库，可扩充 `llm/knowledge_base.py` 后重试 |
-| 问答很慢 | 7B 在 6GB 显存上单次约 4~10 秒；可换 `qwen2.5:3b`（改 `llm/local_llm.py` 的 `MODEL_NAME`） |
-| 中文乱码 | 命令行执行前 `chcp 65001`；GUI 与网页不受影响 |
-| Python 3.12 装不上 | 本项目依赖 torch 2.0.1，请改用 Python 3.8~3.11 |
+- 页面在部分窄屏/大屏比例下排版仍需微调；
+- 评分超过 20 张时只计前 20 张（有意设计），但页面未强提示"已满"；
+- EdgeJev 零样本能力弱，只适合固定 3 条指令；
+- 自动喷洒交互仍是 v1（自动/手动总闸 + 手动喷 + 停止），阈值/片区选择未做成可配置面板；
+- 桌面 GUI 未统一为网站风格（作为备用入口保留）；
+- 手机端实时识别的帧率/延迟依赖现场 WiFi，弱网下会掉帧。
 
 ---
 
-## 12. 技术栈
+## 18. 许可与致谢
 
-YOLOv8（Ultralytics）· PyQt5 · FastAPI + Uvicorn · OpenCV · PyTorch · Ollama（本地 LLM，RAG/防幻觉）·
-scikit-learn（TF-IDF 检索）· System.Speech / pyttsx3（离线 TTS）· pyserial（ESP32 联动）· 自签 HTTPS + 手写二维码
-
-> 说明：手机端是**纯浏览器页面**（无 App、无 Web Bluetooth），因此 iOS 也能用；
-> 喷洒节点由**服务器**通过 HTTP 直接下发（见 `docs/archive/国赛方案.md` 拓扑），手机只连服务器。
+- 本项目代码见 [LICENSE](LICENSE)。
+- `edgejev/` 来自 [yzfly/edgejev](https://github.com/yzfly/edgejev)（Apache-2.0）。
+- 字体：更纱黑体 SC / 思源宋体 / 得意黑，均为 SIL OFL 许可，已裁剪为 woff2 随前端打包。
+- 感谢队友在 Vue 前端（PR#1）与 EdgeJev 接入（PR#3）上的工作。

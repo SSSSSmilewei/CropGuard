@@ -23,7 +23,7 @@ from UI import Ui_MainWindow, APP_STYLE, TABLE_COLUMN_WIDTHS
 
 from tool.parser import get_config
 from tool.tools import draw_info, result_info_format, format_data, writexls, writecsv, assess_risk
-from tool.camera_source import get_source, release_source
+from tool.camera_source import get_source, release_source, spec_from_config
 from llm import knowledge_base
 from feedback.feedback import Feedback
 from feedback.tts import TTSEngine
@@ -61,7 +61,8 @@ header_color = _table_style.get('header_color', '255,255,255')
 _cfg_conn = config.get('CONFIG', {}) or {}
 camera_device = str(_cfg_conn.get('camera_device') or '').strip()
 camera_num = _cfg_conn.get('camera_num', 0)
-camera_spec = camera_device or camera_num
+# 与网页/演示台同一套口径（tool/camera_source.spec_from_config）：别再各处各写一份
+camera_spec = spec_from_config(_cfg_conn)
 # 中文名称映射
 chinese_name = _cfg_conn.get('chinese_name', {})
 

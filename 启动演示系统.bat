@@ -38,7 +38,7 @@ REM 3.5) 服务器已经在跑？直接开指挥台，别起第二个（端口�
 powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 http://127.0.0.1:8080/api/health; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>nul
 if not errorlevel 1 (
   echo [提示] 服务器已经在运行，直接打开演示指挥台。
-  start "" http://127.0.0.1:8080/demo
+  call :open_demo
   ping -n 5 127.0.0.1 >nul
   exit /b 0
 )
@@ -47,16 +47,16 @@ REM 4) 起服务器（单独窗口，日志看得见；关这个窗口 = 关服�
 echo [1/2] 正在启动服务器（首次加载模型约 10-20 秒）...
 start "CropGuard 服务器（别关这个窗口）" cmd /k "%PY% -B api_server.py"
 
-REM 5) 等 8080 就绪（最多 60 秒）
+REM 5) 等 8080 就绪（每次探测约 3 秒，40 次 ≈ 2 分钟；冷机器/杀毒扫描会慢）
 echo [2/2] 等待服务器就绪...
 set /a tries=0
 :wait
 set /a tries+=1
 powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 http://127.0.0.1:8080/api/health; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>nul
 if not errorlevel 1 goto ready
-if %tries% GEQ 30 (
+if %tries% GEQ 40 (
   echo.
-  echo [错误] 60 秒内没起来。看「CropGuard 服务器」窗口里的报错。
+  echo [错误] 约 2 分钟还没起来。看「CropGuard 服务器」窗口里的报错。
   echo        最常见：8080 被占用 - 先双击「停止演示系统.bat」，再重新双击本文件。
   pause
   exit /b 1
@@ -65,10 +65,19 @@ ping -n 3 127.0.0.1 >nul
 goto wait
 
 :ready
-start "" http://127.0.0.1:8080/demo
-echo.
-echo 已打开「演示指挥台」：http://127.0.0.1:8080/demo
+call :open_demo
 echo 手机端地址在第三张卡片上（扫码即可）。
 echo 演示结束：双击「停止演示系统.bat」。
 ping -n 7 127.0.0.1 >nul
 exit /b 0
+
+REM 打开指挥台：两个分支共用。这里只负责"开浏览器 + 把地址留在屏幕上"，
+REM 万一现场机器的默认浏览器关联坏了（start 会静默失败），操作员照着地址手打也能进去。
+:open_demo
+start "" "http://127.0.0.1:8080/demo"
+ping -n 4 127.0.0.1 >nul
+echo.
+echo 已请求打开「演示指挥台」：http://127.0.0.1:8080/demo
+echo   如果浏览器没有自动弹出来，请手动打开上面这个地址。
+exit /b 0
+

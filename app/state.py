@@ -16,11 +16,13 @@ from tool.parser import get_config
 from feedback.feedback import Feedback
 from feedback.tts import TTSEngine
 from feedback.spray import SprayController
+from app import spray_targets as spray_targets_file
 
 from tool.camera_source import (
     get_source as cam_get_source,
     release_source as cam_release_source,
     pool_state as cam_pool_state,
+    spec_from_config,
 )
 
 # ---------------------------------------------------------------- 配置
@@ -105,13 +107,35 @@ spray = SprayController(
 _protocols = {g: spray.protocol_of(g) for g in spray.http_targets}
 print(f"[INFO] Spray transport={spray.transport} available={spray.available} "
       f"protocols={_protocols}")
+
+# 现场在 /demo 里改过节点地址？覆盖文件优先于 configs.yaml（见 app/spray_targets.py）
+_local_targets = spray_targets_file.load()
+if _local_targets:
+    _applied, _errs = spray.set_http_targets(_local_targets)
+    if _applied:
+        print(f"[INFO] 喷淋节点地址来自本地覆盖 {spray_targets_file.PATH}："
+              f"{[(t['group'], t['url'], t['protocol']) for t in _applied]}")
+    for _e in _errs:
+        print(f"[WARN] 覆盖文件里的节点地址被忽略：{_e}")
+
 print(f"[INFO] 雾化节点(mist)={[t['url'] for t in spray.mist_targets()]} "
       f"持续模式兜底={spray.direct_max_sec}s")
 
 # ---------------------------------------------------------------- 摄像头源解析（多路片区方案 + 单摄回退）
 cfg_cameras = config.get('CONFIG', {}).get('cameras') or []
-camera_num = int(config.get('CONFIG', {}).get('camera_num', 0))
+_cfg_conn = config.get('CONFIG', {}) or {}
+camera_num = int(_cfg_conn.get('camera_num', 0))
+# 设备标识优先（'vid_0c45' / 'USB Camera'），数字索引只在标识为空时兜底。
+# ⚠️ 以前 web/演示台这条路只读 camera_num：配置里写了 camera_device 也没人认
+#    （只有 PyQt GUI main.py 认），于是演示台静默打开了"另一台相机"——画面正常，
+#    但拍的不是对着标本的那台，现场很难发现。见 tool/camera_source.spec_from_config。
+camera_device = str(_cfg_conn.get('camera_device') or '').strip()
+camera_spec = spec_from_config(_cfg_conn)
 cfg_camera = config.get('CAMERA', {}) or {}
+print(f"[INFO] 摄像头：camera_device={camera_device or '(空)'} camera_num={camera_num} "
+      f"→ 使用 {camera_spec!r}"
+      + ("（按设备标识解析，匹配不上就报错，绝不换相机）"
+         if camera_device else "（数字索引，插拔/重启后可能变）"))
 
 # 相机 key -> CameraSource：当前**有订阅者**的相机（推理泵按它逐路推理）。
 # 引用计数由 camera_source 维护；这里的增删必须走 _cam_subscribe/_cam_unsubscribe，
@@ -190,7 +214,7 @@ def resolve_camera(cam_id=None):
             str(chosen.get('group', '') or ''),
             str(chosen.get('name') or chosen.get('id') or ''),
         )
-    return camera_num, '', ''
+    return camera_spec, '', ''
 
 
 # ---------------------------------------------------------------- 联动/喷淋历史（Client 页「历史回看」用，内存环形缓存）

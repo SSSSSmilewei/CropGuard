@@ -4,6 +4,7 @@ import { groupLabel } from '../lib/format'
 import { useStation } from '../composables/station'
 import CommandBox from '../components/CommandBox.vue'
 import HistoryList from '../components/HistoryList.vue'
+import MistCard from '../components/MistCard.vue'
 import SprayControl from '../components/SprayControl.vue'
 
 const { state, zoneOf, nodesOnline, refreshStatus } = useStation({ history: true })
@@ -60,6 +61,10 @@ const plans = computed(() =>
       <div class="panel panel-pad">
         <div class="panel-head"><h2>手动喷淋</h2></div>
         <SprayControl via="web" />
+      </div>
+      <div class="panel panel-pad">
+        <div class="panel-head"><h2>雾化（ESP32 直连）</h2><span class="aside">手写 sketch · /api/mist</span></div>
+        <MistCard :max-sec="state.spray?.max_duration || state.config?.max_spray || 5" />
       </div>
       <div class="panel panel-pad">
         <div class="panel-head"><h2>一句话控制</h2></div>

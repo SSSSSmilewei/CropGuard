@@ -21,7 +21,7 @@
 * real_testset20/eval_*.json       20 张真实样本实测（scripts/eval_real_testset.py 产物）
 * real_testset20/*.jpg             缩略图（内嵌为 data URI，页面才能离线单文件打开）
 * dataset_full/data.yaml + images/labels 计数
-* llm/knowledge_base.py PEST_KB    中文类名（与 docs/27类中英文对照.md 同源）
+* llm/knowledge_base.py PEST_KB    中文类名（与 README 的 27 类对照表同源）
 * config/configs.yaml              喷淋/相机/RAG 运行口径
 
 ⚠️ Windows 上 cv2.imread 读不了中文路径，所以缩略图用 np.fromfile + cv2.imdecode（踩过）。

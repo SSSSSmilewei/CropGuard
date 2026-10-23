@@ -72,6 +72,8 @@ let ws: WebSocket | null = null
 let timer = 0
 let waiting = false
 let waitT = 0
+let retryT = 0
+let retryN = 0
 
 const requesting = ref(false)
 
@@ -109,13 +111,21 @@ async function startLive() {
   }
   live.value = true
   if (video.value) video.value.srcObject = stream
-  ws = new WebSocket(wsUrl('/ws/phone'))
-  ws.binaryType = 'arraybuffer'
-  ws.onopen = () => {
+  connectWs()
+}
+
+/** 建 /ws/phone 连接；断线自动重连（相机流不重开，避免手机端反复弹权限） */
+function connectWs() {
+  const sock = new WebSocket(wsUrl('/ws/phone'))
+  sock.binaryType = 'arraybuffer'
+  ws = sock
+  sock.onopen = () => {
+    retryN = 0
     liveInfo.value = '识别中'
+    window.clearInterval(timer)
     timer = window.setInterval(capture, state.config?.frame_interval_ms || 400)
   }
-  ws.onmessage = (ev) => {
+  sock.onmessage = (ev) => {
     waiting = false
     window.clearTimeout(waitT)
     let d: { error?: string; warning?: string; pong?: boolean; detections?: Detection[]; risk?: Risk; elapsed?: number }
@@ -127,7 +137,15 @@ async function startLive() {
     liveInfo.value = `${d.risk?.level || '--'} · ${liveDets.value.length} 个目标 · ${d.elapsed ?? '--'} s`
     if (liveDets.value.length) setChatContext(liveDets.value, d.risk!)
   }
-  ws.onclose = () => { if (live.value) { stopLive(); toast('实时连接断开了', 'bad') } }
+  sock.onclose = () => {
+    window.clearInterval(timer)
+    if (!live.value) return
+    if (retryN >= 5) { stopLive(); toast('实时连接断开，已停止识别', 'bad'); return }
+    retryN += 1
+    liveInfo.value = `连接断开，2 秒后重连（第 ${retryN} 次）`
+    retryT = window.setTimeout(connectWs, 2000)
+  }
+  sock.onerror = () => { try { sock.close() } catch { /* 忽略 */ } }
 }
 function capture() {
   const v = video.value
@@ -151,6 +169,8 @@ function capture() {
 function stopLive() {
   live.value = false
   window.clearInterval(timer)
+  window.clearTimeout(retryT)
+  retryN = 0
   const s = ws
   ws = null
   if (s) { try { s.close() } catch { /* 已关闭 */ } }

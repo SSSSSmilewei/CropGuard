@@ -1,12 +1,16 @@
 <script setup lang="ts">
 // 手机端外壳：顶部连接状态 + 底部四个标签（识别 / 问答 / 喷洒 / 记录）。标签状态记在地址栏 hash 里，刷新不丢。
-import { computed, ref, watch } from 'vue'
+// 视觉与桌面站同一套 tokens / 组件；只做移动端单列排版与触控尺寸适配。
+// http 打开会自动升级到 https（?http=1 可留在 HTTP），见 composables/phoneEntry.ts。
+import { computed, onMounted, ref, watch } from 'vue'
 import { useStation } from '../composables/station'
+import { usePhoneEntry } from '../composables/phoneEntry'
 import BrandMark from '../components/BrandMark.vue'
 import ChatThread from '../components/ChatThread.vue'
 import CommandBox from '../components/CommandBox.vue'
 import HistoryList from '../components/HistoryList.vue'
 import Icon from '../components/Icon.vue'
+import MistCard from '../components/MistCard.vue'
 import SprayControl from '../components/SprayControl.vue'
 import ThemeButton from '../components/ThemeButton.vue'
 import MobileDetect from './mobile/MobileDetect.vue'
@@ -26,6 +30,9 @@ watch(tab, (t) => {
 })
 
 const { state, maxSpray } = useStation({ history: true })
+const { httpsUrl, secureTip, ensureHttps } = usePhoneEntry()
+onMounted(ensureHttps)
+
 const status = computed(() => {
   if (state.online === false) return { tone: 'bad', text: '连不上服务器' }
   if (!state.health) return { tone: '', text: '正在连接…' }
@@ -44,6 +51,10 @@ const TITLES: Record<Tab, string> = { detect: '株得', chat: '农技问答', sp
       <ThemeButton />
     </header>
 
+    <a v-if="secureTip" class="m-tip" :href="httpsUrl || '#'">
+      <Icon name="info" :size="14" />{{ secureTip }}
+    </a>
+
     <main class="m-body" :class="{ chat: tab === 'chat' }">
       <KeepAlive>
         <MobileDetect v-if="tab === 'detect'" />
@@ -59,6 +70,10 @@ const TITLES: Record<Tab, string> = { detect: '株得', chat: '农技问答', sp
         <section class="panel panel-pad">
           <div class="panel-head"><h2>手动喷洒</h2></div>
           <SprayControl via="phone" />
+        </section>
+        <section class="panel panel-pad">
+          <div class="panel-head"><h2>雾化（ESP32 直连）</h2></div>
+          <MistCard :max-sec="maxSpray" />
         </section>
       </template>
       <section v-if="tab === 'hist'" class="panel panel-pad">
@@ -89,6 +104,11 @@ const TITLES: Record<Tab, string> = { detect: '株得', chat: '农技问答', sp
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 .m-title { font-family: var(--font-serif); font-size: 18px; font-weight: 700; }
+.m-tip {
+  display: flex; align-items: flex-start; gap: 8px; margin: 10px 16px 0;
+  padding: 10px 12px; border-radius: var(--r); text-decoration: none;
+  background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-ink); font-size: 12.5px; line-height: 1.6;
+}
 .m-status { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .m-body {
   flex: 1; display: flex; flex-direction: column; gap: 12px;

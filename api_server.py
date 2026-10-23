@@ -46,6 +46,7 @@ except ImportError:
 from app.state import (
     config, yolo_model, device, weights_path, conf_thres, imgsz,
     feedback, spray, cfg_spray, cfg_cameras, camera_num, cfg_camera,
+    camera_device, camera_spec,
     _CAM_SOURCES, _cam_kwargs, _camera_key, resolve_camera,
     _cam_subscribe, _cam_unsubscribe,
     cam_pool_state,
@@ -69,8 +70,10 @@ from serve import spa
 # 页面渲染（旧版 PC 首页 / 手机页 / 离线看板；保留为兜底与 /m 唯一入口）
 from serve import mobile as mobile_page
 from serve import pages as static_pages
-# EdgeJev 本地类型化决策（离线 CPU 推理，部署见 docs/株得CropGuard-总手册.md 第 7 节）
+# EdgeJev 本地类型化决策（离线 CPU 推理，部署见 README.md 第 9 节）
 from app import edge_engine
+# 指挥台「节点地址」面板的现场覆盖文件（不改 configs.yaml，见 app/spray_targets.py）
+from app import spray_targets as spray_targets_file
 # 现场测评评分口径（与 GUI 共用同一份纯函数）
 from app.eval_score import rubric_from_config as _rubric_from_config, score_with_rubric
 
@@ -84,6 +87,13 @@ app = FastAPI(
 # ---------------- 前端页面：/ /stream /ask /spray /system /m 都交给前端路由 ----------------
 if os.path.isdir(spa.ASSETS):
     app.mount("/assets", StaticFiles(directory=spa.ASSETS), name="assets")
+
+# 原生页（/m-classic、/demo、/eval-classic）共用的静态资源：设计令牌等。
+# tokens.css 由 scripts/sync_tokens.py 从 web/src/styles/tokens.css 生成，
+# 保证「站点 + 手机端 + 指挥台」是同一套视觉（见 tests/test_design_tokens.py）。
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'serve', 'static')
+if os.path.isdir(_STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 
 def _spa_page():
@@ -379,11 +389,12 @@ async def qr_image(url: str = None, size: int = 6):
         raise HTTPException(status_code=500, detail=f'二维码生成失败: {exc}')
 
 
-@app.get("/m", response_class=HTMLResponse)
+@app.get("/m-classic", response_class=HTMLResponse)
 async def mobile_home(request: Request):
-    """手机会话页：拍照识别 / 实时识别 / 问答 / 喷洒控制 / 雾化控制（ESP32 直连）。
+    """手机会话页（原生兜底版）：拍照识别 / 实时识别 / 问答 / 喷洒控制 / 雾化控制。
 
-    手机端**唯一入口**：新前端（Vue）不接管 /m，这里保留实测过的原生页
+    2026-10-24 起手机端主入口 `/m` 由 Vue 接管（与站点同一套视觉），
+    这一份原实现保留为 `/m-classic`：前端出问题时仍有"实测过"的后路
     （http→https 自动升级、同源 API、canvas 叠框、雾化卡片都在这一页里）。
     """
     host = (request.url.hostname or '')
@@ -661,7 +672,7 @@ async def feedback_status():
 
 
 # ==================== EdgeJev 本地类型化决策（离线 CPU 推理） ====================
-# 部署与设计见 app/edge_engine.py 与 docs/株得CropGuard-总手册.md 第 7 节。
+# 部署与设计见 app/edge_engine.py 与 README.md 第 9 节。
 # ⚠️ 定位（2026-10-16 与用户对齐）：EdgeJev 的作用是**在系统预设的固定选项集上做"选择题"**
 #    （choice / score / noul），把"理解/分流"变成可枚举、可校准、可审计的决策；
 #    **不提供自由问答式的语言性决策**。因此对外只暴露"决策点"（见 /api/edge/decision_points），
@@ -792,9 +803,13 @@ def _eval_report_dir():
     return p if os.path.isabs(p) else os.path.join(os.path.dirname(os.path.abspath(__file__)), p)
 
 
-@app.get("/eval", response_class=HTMLResponse)
+@app.get("/eval-classic", response_class=HTMLResponse)
 async def eval_page():
-    """现场测评页（20 样本 / 180 秒）：动效呈现每张用时与总用时，评委可逐张判分。"""
+    """现场测评页（原生兜底版，20 样本 / 180 秒）。
+
+    2026-10-24 起 `/eval` 由 Vue 接管（并进检测台的「评分作业」模式）；
+    这一份原生页保留为 `/eval-classic`，前端出问题或想单独投屏时仍可用。
+    """
     from serve import eval_page as _eval_page
     return _eval_page.render(config=config)
 
@@ -895,6 +910,49 @@ def eval_report_download(name: str):
     return FileResponse(full, filename=base, media_type='text/csv')
 
 
+# ==================== 评分快照（拍照即存，供回看） ====================
+# 评分作业的样本是"实时画面里拍一张"，必须把带框的结果图落盘，否则刷新页面就没法回看。
+# 纯逻辑（dataURL 校验 / 安全路径）在 app/eval_snapshot.py，可被单测直接覆盖；
+# 目录与 GUI 保持一致（config CAMERA.history_dir，默认 ./output/snapshots），
+# 这样评委用 GUI 拍的、用网页拍的，都躺在同一个文件夹里。
+def _eval_snapshot_dir():
+    """评分快照目录（与 GUI 的 _save_snapshot 同一个目录）。"""
+    p = str((cfg_camera or {}).get('history_dir') or './output/snapshots')
+    return p if os.path.isabs(p) else os.path.join(_ROOT, p)
+
+
+@app.post("/api/eval/snapshot")
+def eval_snapshot_save(payload: dict = None):
+    """把一张带框图落盘。body: {"image": "data:image/jpeg;base64,..."}。
+
+    写盘失败**不抛 500**：返回 success=false + 原因，评分记录照常进行（快照只用于回看）。
+    """
+    from app import eval_snapshot
+    payload = payload or {}
+    try:
+        got = eval_snapshot.save(payload.get('image'), _eval_snapshot_dir())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        traceback.print_exc()
+        return {'success': False, 'url': None, 'name': None,
+                'error': f'快照保存失败：{type(exc).__name__}: {exc}'}
+    return {'success': True, 'name': got['name'], 'path': got['path'],
+            'url': f'/api/eval/snapshot?name={got["name"]}'}
+
+
+@app.get("/api/eval/snapshot")
+def eval_snapshot_get(name: str):
+    """读回一张快照（只在快照目录内取，防目录穿越）。"""
+    from fastapi.responses import FileResponse
+    from app import eval_snapshot
+    try:
+        full = eval_snapshot.path_of(name, _eval_snapshot_dir())
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if '不存在' in str(exc) else 400, detail=str(exc))
+    return FileResponse(full)
+
+
 @app.get("/api/history")
 async def history():
     """联动/喷淋历史回看。"""
@@ -908,6 +966,70 @@ def _check_group(group):
         raise HTTPException(status_code=400,
                             detail=f"分组 {group} 不在白名单 {sorted(spray.allowed_groups)}")
     return group
+
+
+# 仓库里的占位地址：现场必须按节点串口打印的 IP 改（见 configs.yaml 的 SPRAY.http_targets 注释）
+SPRAY_PLACEHOLDER_IPS = ('172.23.153.231',)
+
+
+def _spray_placeholder(rows):
+    """地址表是不是"还没改过"：含仓库占位 IP，或两个分组指向同一台地址。"""
+    urls = [str((r or {}).get('url', '')) for r in (rows or [])]
+    if any(ip in u for u in urls for ip in SPRAY_PLACEHOLDER_IPS):
+        return True
+    return len(urls) > 1 and len(set(urls)) == 1
+
+
+@app.get("/api/spray/targets")
+def spray_targets_get():
+    """当前 http 节点地址表（/demo 的「节点地址」面板数据源）。
+
+    placeholder=True 表示还是 configs.yaml 里的占位地址，页面会直接提示去改。
+    """
+    rows = spray.http_target_rows()
+    return {
+        "success": True,
+        "transport": spray.transport,
+        "targets": rows,
+        "placeholder": _spray_placeholder(rows),
+        "overlay": spray_targets_file.exists(),
+        "protocols": sorted(spray.PROTOCOLS),
+    }
+
+
+@app.post("/api/spray/targets")
+def spray_targets_apply(payload: dict = None):
+    """现场热改节点地址：不碰 configs.yaml，也不用重启服务。
+
+    body: {"targets": [{"group": "g1", "url": "http://10.130.161.50", "protocol": "mist"}, ...],
+           "persist": true}     # persist=False 只改内存（临时试一下，重启即恢复）
+
+    为什么要有这个端点：节点是 DHCP 拿地址、只印在串口上；改 YAML 要重启服务，
+    比赛现场重启风险高，而且容易把 YAML 里的方案说明注释写坏。
+    persist=True 时落到 config/spray_targets.local.json，下次启动自动生效。
+    """
+    payload = payload or {}
+    persist = bool(payload.get("persist", True))
+    applied, errors = spray.set_http_targets(payload.get("targets") or [])
+    saved = ''
+    if applied and persist:
+        try:
+            saved = spray_targets_file.save(applied)
+        except Exception as exc:
+            errors.append(f'写入覆盖文件失败（本次已生效，重启会丢）：{exc}')
+    # max_age=0：刚改完地址必须立刻真连一次，不能拿旧缓存糊弄现场
+    nodes = spray.probe_nodes(max_age=0) if applied else []
+    print(f"[SPRAY] 节点地址已更新：{[(t['group'], t['url']) for t in applied]} "
+          f"persist={persist} saved={saved or '-'}", flush=True)
+    return {
+        "success": bool(applied),
+        "applied": applied,
+        "errors": errors,
+        "saved": saved,
+        "transport": spray.transport,
+        "nodes": nodes,
+        "placeholder": _spray_placeholder(applied),
+    }
 
 
 @app.get("/api/spray/status")
@@ -1096,7 +1218,10 @@ def demo_status():
     cam = next(iter(pool.values()), {}) if pool else {}
     spray_st = {'available': bool(spray.available), 'transport': spray.transport,
                 'groups': sorted(g for g in spray.allowed_groups if g != 'all'),
-                'nodes': [], 'auto': auto_spray_linkage_enabled()}
+                'nodes': [], 'auto': auto_spray_linkage_enabled(),
+                'targets': spray.http_target_rows(),
+                'placeholder': _spray_placeholder(spray.http_target_rows()),
+                'overlay': spray_targets_file.exists()}
     try:
         if spray.enabled:
             spray_st['nodes'] = spray.probe_nodes()
@@ -1121,7 +1246,11 @@ def demo_status():
         'model': {'classes': len(yolo_model.names), 'device': device,
                   'weights': os.path.basename(str(weights_path))},
         'camera': {'open': bool(pool), 'state': cam.get('state'),
-                   'fps': cam.get('fps'), 'last_error': cam.get('last_error')},
+                   'fps': cam.get('fps'), 'last_error': cam.get('last_error'),
+                   # 正在用哪台：标识 / 落在哪个索引 / 设备名（演示台显示，现场一眼核对）
+                   'device': cam.get('device'), 'index': cam.get('index'),
+                   'spec': cam.get('source_spec', camera_spec),
+                   'configured_spec': camera_spec},
         'spray': spray_st,
         'tts': {'ready': bool(tts.get('ready')), 'engine': tts.get('engine')},
         'ollama': {'up': _port_open('127.0.0.1', 11434)},
@@ -1210,6 +1339,8 @@ async def camera_health(cam: str = None):
     if cam:
         return {"success": True, "key": str(_camera_key(cam)), "pool": pool}
     return {"success": True, "pool": pool, "camera_num": camera_num,
+            # 现场核对"到底用哪台相机"：标识 → 索引 → 设备名（见 tool/camera_source）
+            "camera_device": camera_device, "camera_spec": camera_spec,
             "configured_zones": [c.get('id') for c in cfg_cameras]}
 
 
@@ -1227,7 +1358,8 @@ def camera_restart(payload: dict = None):
     src = _cam_subscribe(key, source=source, name=zone_label or str(source))
     try:
         ok = src.restart()
-        src.wait_first_frame(timeout=3.0)
+        # 与 /ws/stream 同口径：外接 USB 冷启动可能 7 秒以上才出图，只等 3 秒会误报"重启失败"
+        src.wait_first_frame(timeout=float(cfg_camera.get('probe_timeout', 12.0) or 12.0))
         return {"success": bool(ok), "key": str(key), "state": src.state()}
     finally:
         _cam_unsubscribe(key)
@@ -1263,13 +1395,15 @@ async def ws_stream(websocket: WebSocket):
         await websocket.close()
         return
 
-    got = await loop.run_in_executor(
-        None, cam.wait_first_frame, float(cfg_camera.get('probe_timeout', 8.0) or 5.0))
+    wait_sec = float(cfg_camera.get('probe_timeout', 12.0) or 12.0)
+    got = await loop.run_in_executor(None, cam.wait_first_frame, wait_sec)
     if not got:
         st = cam.state()
-        await websocket.send_text(json.dumps(
-            {"error": f"无法打开摄像头 {zone_label or source}（{st.get('last_error') or '拿不到首帧'}）",
-             "camera": st}, ensure_ascii=False))
+        # 有 last_error 就原样下发：里面已经区分了"打不开"和"能打开但没画面"，别再套一层括号
+        err = (st.get('last_error')
+               or f'无法打开摄像头 {zone_label or source}：{wait_sec:.0f} 秒内没拿到首帧；'
+                  '可调大 config/configs.yaml 的 CAMERA.probe_timeout，或检查 USB 口 / 是否被占用')
+        await websocket.send_text(json.dumps({"error": err, "camera": st}, ensure_ascii=False))
         await websocket.close()
         _cam_unsubscribe(key)
         return

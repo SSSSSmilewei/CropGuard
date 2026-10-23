@@ -169,6 +169,73 @@ export interface LanInfo {
   phone_urls_https: string[]
 }
 
+/** 评分口径（与 app/eval_score.py 返回字段一致） */
+export interface EvalScore {
+  total: number
+  judged: number
+  correct: number
+  acc: number
+  elapsed: number
+  over: number
+  time_score: number
+  score: number
+}
+
+/** 一条评分样本（喂给 /api/eval/{score,report} 的形状） */
+export interface EvalRecord {
+  no?: string | number
+  name: string
+  time?: string
+  detections: { chinese_name?: string; class_name?: string; confidence: number }[]
+  consum?: number
+  elapsed?: number
+  verdict?: '正确' | '错误' | null
+}
+
+export interface EvalRubric {
+  target: number
+  pps: number
+  limit: number
+  time_full: number
+  penalty: number
+  acc_full: number
+  total_full: number
+}
+
+export interface MistNode {
+  group: string
+  url: string
+  protocol?: string
+  reachable?: boolean
+  running?: boolean
+  mode?: 'timed' | 'direct' | 'idle' | 'unknown'
+  remain?: number | null
+  direct_remaining?: number | null
+  error?: string
+}
+
+export interface MistStatus {
+  success: boolean
+  group: string
+  nodes: MistNode[]
+  reachable: boolean
+  direct_max_sec: number
+  transport: string
+  available: boolean
+  error?: string
+}
+
+export interface DemoStatus {
+  success: boolean
+  spray?: {
+    available: boolean
+    transport: string
+    auto: boolean
+    nodes: { group: string; name?: string; url: string; online: boolean; spraying?: boolean; remain?: number | null }[]
+  }
+  camera?: { open: boolean; device?: string | null; index?: number | null; last_error?: string | null }
+}
+
 export class ApiError extends Error {
   status: number
   constructor(message: string, status: number) {
@@ -234,6 +301,35 @@ export const api = {
     postJSON<{ success: boolean; group: string }>('/api/spray/stop', { group, via }),
   restartCamera: (cam: string | null) =>
     postJSON<{ success: boolean; state: CameraState }>('/api/camera/restart', { cam }),
+
+  /* ---------------- 评分作业（与 GUI / 原生 /eval 同一口径） ---------------- */
+  evalSamples: () =>
+    request<{ success: boolean; dir: string; count: number; samples: { name: string; size?: number }[] }>('/api/eval/samples'),
+  evalSampleUrl: (name: string) => `/api/eval/sample_image?name=${encodeURIComponent(name)}`,
+  evalScore: (records: { verdict?: string | null }[], elapsed: number) =>
+    postJSON<{ success: boolean; score: EvalScore; rubric: EvalRubric }>('/api/eval/score', { records, elapsed }),
+  evalReport: (records: EvalRecord[], elapsed: number) =>
+    postJSON<{ success: boolean; path: string; name: string; url: string; score: EvalScore }>(
+      '/api/eval/report', { records, elapsed }),
+  /** 拍照即存：把带框截图落盘到 output/snapshots/（与 GUI 同目录），供回看 */
+  saveSnapshot: (dataUrl: string) =>
+    postJSON<{ success: boolean; name?: string; path?: string; url?: string; error?: string }>(
+      '/api/eval/snapshot', { image: dataUrl }),
+
+  /* ---------------- 雾化（手写 sketch 节点） ---------------- */
+  mistStatus: (group = 'all') => request<MistStatus>(`/api/mist/status?group=${encodeURIComponent(group)}`),
+  mistStart: (seconds: number, group = 'all') =>
+    postJSON<{ success: boolean; group: string; duration: number; error?: string | null }>(
+      '/api/mist/start', { seconds, group }),
+  mistDirect: (group = 'all') =>
+    postJSON<{ success: boolean; group: string; error?: string | null }>('/api/mist/direct', { group }),
+  mistStop: (group = 'all') =>
+    postJSON<{ success: boolean; group: string; error?: string | null }>('/api/mist/stop', { group }),
+
+  /* ---------------- 演示指挥台共用的开关 ---------------- */
+  demoStatus: () => request<DemoStatus>('/api/demo/status'),
+  autoSpray: (enabled: boolean) =>
+    postJSON<{ success: boolean; auto_spray: boolean }>('/api/demo/auto_spray', { enabled }),
 }
 
 export function wsUrl(path: string) {

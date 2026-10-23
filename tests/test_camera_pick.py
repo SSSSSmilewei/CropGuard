@@ -129,6 +129,27 @@ def test_valid_selector_records_device_and_index():
 
 
 @test_case
+def test_pinned_failure_hint_distinguishes_causes():
+    """"打不开"和"能打开但没画面"要分开说 —— 现场处理方式完全不同。
+
+    这条是被真实误判逼出来的：现场外接相机冷启动 7.4s 才出图，
+    probe_timeout=8s 卡边界，结果报成"被别的程序占用"，白折腾半天。
+    """
+    open_fail = cam.CameraSource.pinned_failure_hint('vid_0c45', 0, opened_no_frame=False)
+    assert '打不开' in open_fail and '占用' in open_fail, open_fail
+    assert 'camera_check' in open_fail, open_fail
+    assert '不会改用其它相机' in open_fail, open_fail
+
+    no_frame = cam.CameraSource.pinned_failure_hint('vid_0c45', 0, opened_no_frame=True)
+    assert '没出画面' in no_frame, no_frame
+    assert 'probe_timeout' in no_frame, no_frame
+    assert '不会改用其它相机' in no_frame, no_frame
+    # 两种原因不能互相冒充
+    assert '占用' not in no_frame, no_frame
+    assert '没出画面' not in open_fail, open_fail
+
+
+@test_case
 def test_camera_label_prefers_device_name():
     """GUI 状态栏标签要显示设备名（分不清外接/内置就是栽在这上面）。"""
     import importlib.util
@@ -150,3 +171,44 @@ def test_camera_label_prefers_device_name():
     # 没有设备名时退回索引
     assert 'index' not in label({'index': 0}).lower() or '索引' in label({'index': 0})
     assert '索引0' in label({'index': 0}), label({'index': 0})
+
+
+# ==================== CONFIG -> 用哪个相机（网页/演示台也要认标识） ====================
+@test_case
+def test_spec_from_config_prefers_device_identifier():
+    """写了 camera_device 就必须用它 —— 网页/演示台以前只读 camera_num。
+
+    事故现场（2026-10-23 第一套演示）：配置里 camera_device='vid_0c45'、
+    camera_num=1；PyQt GUI 认标识、开的是外接相机，而网页/演示台只读 camera_num，
+    开成了笔记本内置相机 —— 画面正常，只是拍错了东西。
+    """
+    assert cam.spec_from_config({'camera_device': 'vid_0c45', 'camera_num': 1}) == 'vid_0c45'
+    # 前后空格不能变成"找不到设备"
+    assert cam.spec_from_config({'camera_device': '  USB Camera  ', 'camera_num': 1}) == 'USB Camera'
+    # 标识留空才退回索引
+    assert cam.spec_from_config({'camera_device': '', 'camera_num': 1}) == 1
+    assert cam.spec_from_config({'camera_device': None, 'camera_num': '2'}) == 2
+    # 配置缺失/写坏时退回 0，不抛异常（服务必须能起来）
+    assert cam.spec_from_config({}) == 0
+    assert cam.spec_from_config(None) == 0
+    assert cam.spec_from_config({'camera_num': '不是数字'}) == 0
+
+
+@test_case
+def test_pinned_device_never_scans_other_indices():
+    """按标识选中相机后，打不开就只能报错——绝不能改扫其它索引。
+
+    本机实测（2026-10-23）：写 camera_device='vid_0c45' 时解析到 index=0，
+    但 index=0 打不开后代码一路扫到 index=5，中间把笔记本内置相机（index=1）打开了。
+    """
+    assert cam.may_scan_other_indices('vid_0c45', 'vid_0c45') is False
+    assert cam.may_scan_other_indices('USB Camera', 'USB Camera') is False
+    # 只有"没写标识的纯数字源"才允许找一台能用的
+    assert cam.may_scan_other_indices(1) is True
+    assert cam.may_scan_other_indices('2') is True
+    # 流地址 / 文件 / 没匹配上的标识 / 空值：都不许扫
+    assert cam.may_scan_other_indices('rtsp://admin:pw@10.0.0.5:554/Streaming') is False
+    assert cam.may_scan_other_indices('./output/a.mp4') is False
+    assert cam.may_scan_other_indices('vid_ffff') is False
+    assert cam.may_scan_other_indices(None) is False
+    assert cam.may_scan_other_indices(True) is False

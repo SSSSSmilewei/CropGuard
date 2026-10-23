@@ -2,8 +2,10 @@
 #include <WebServer.h>
 
 // ============ 修改手机热点信息 ============
-const char* ssid     = "vivoX300";
-const char* password = "12345678";
+// ⚠️ 这个文件会进公开仓库：真实热点名/密码**不要提交**，填好本地改名烧录即可。
+//    提交前请把下面两行改回占位符（本仓库历史上曾把热点密码写进来，别再犯）。
+const char* ssid     = "your-hotspot-ssid";
+const char* password = "your-hotspot-password";
 // ===========================================
 
 const int relayPin = 22;    //继电器IN脚

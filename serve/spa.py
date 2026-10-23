@@ -15,9 +15,11 @@ INDEX = os.path.join(DIST, 'index.html')
 ASSETS = os.path.join(DIST, 'assets')
 
 # 前端路由：这些路径都返回同一个 index.html，由前端路由渲染对应页面。
-# ⚠️ /m 与 /dashboard-offline 刻意不在这里：手机端仍是实测过的原生页（serve/mobile.py），
-#    离线快照看板（serve/pages/dashboard.html）保留为"断网/双击打开"的兜底页。
-ROUTES = ('/', '/stream', '/ask', '/spray', '/system', '/dashboard')
+# ⚠️ 2026-10-24 起 /eval（现场评分）与 /m（手机端）也由 Vue 接管：
+#    评分并进检测台的「评分作业」模式；手机端重写后与站点同一套视觉。
+#    原生页仍保留，但改挂 /eval-classic、/m-classic 作为兜底（前端出问题时的后路）。
+#    /dashboard-offline 依然是原生单文件快照，不在这里。
+ROUTES = ('/', '/stream', '/ask', '/spray', '/system', '/dashboard', '/eval', '/m')
 
 _MISSING = """<!doctype html><meta charset="utf-8"><title>株得CropGuard</title>
 <body style="font:15px/1.7 system-ui,'Microsoft YaHei',sans-serif;max-width:640px;margin:48px auto;padding:0 16px">

@@ -43,6 +43,10 @@ _DEFAULT_HEIGHT = 720
 _DEFAULT_FOURCC = 'MJPG'
 _DEFAULT_STALE = 2.0
 _DEFAULT_PROBE = 5.0
+# 按设备标识选中后，重试时给"首帧"的最长等待（秒）。
+# 现场外接 USB 相机冷启动实测 7.4s 才出图（tool/camera_check.py），
+# CAMERA.probe_timeout 默认 8s 太贴边，容易把"出图慢"误报成"打不开/被占用"。
+_PINNED_FIRST_FRAME_WAIT = 12.0
 
 
 def _log(msg):
@@ -136,6 +140,46 @@ def resolve_source(spec):
             available = '（枚举失败）'
         return None, f'找不到匹配 {text!r} 的摄像头。当前可用：{available}', ''
     return index, '', text
+
+
+def spec_from_config(conn_cfg=None):
+    """从 CONFIG 段挑出摄像头写法：**设备标识优先，数字索引兜底**。
+
+    索引由 DirectShow 枚举顺序决定，插拔 USB / 重启系统都可能整体翻天
+    （本机 10-08 与 10-11 就翻过一次：配置没动、打开的相机换了）。设备标识
+    （``'vid_0c45'`` / ``'USB Camera'``）不会变，所以只要写了就用它。
+
+    返回 ``str``（标识）或 ``int``（索引）；调用方原样交给 :class:`CameraSource`
+    —— 标识匹配不上时它会**报错中止**，绝不会改开另一台相机。
+    """
+    conn_cfg = conn_cfg or {}
+    device = str(conn_cfg.get('camera_device') or '').strip()
+    if device:
+        return device
+    try:
+        return int(conn_cfg.get('camera_num', 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def may_scan_other_indices(source_spec, device_name=''):
+    """打开失败后，能不能"改扫其它索引"？
+
+    **只有没写设备标识的纯数字源可以**：
+    * 配置写了 ``camera_device='vid_0c45'`` → 匹配到的那台是唯一合法目标。
+      它打不开（被浏览器/微信/GUI 占用、没插好、驱动异常）时**必须报错**，
+      绝不能改开笔记本内置相机 —— 那台也能出图，画面看着完全正常，
+      但拍的已经不是对着标本的那台，现场根本发现不了。
+      本机实测就踩过：外接相机被占用 → 一路扫到 index=1 打开内置相机。
+    * RTSP/文件地址、标识没匹配上 → 更不能扫（那是另外的设备）。
+    """
+    if str(device_name or '').strip():
+        return False                      # 按标识选中的，钉死这一台
+    if isinstance(source_spec, bool):
+        return False
+    if isinstance(source_spec, int):
+        return True
+    return str(source_spec or '').strip().isdigit()
 
 
 class CameraSource:
@@ -245,7 +289,22 @@ class CameraSource:
                                 f'无法打开 {self.source!r}（文件不存在 / 流地址不可达 / 格式不支持）')
             return None, None
 
-        # 3) 多策略解析（换 FOURCC / 扫其它索引 / 按设备名）——只对数字索引做
+        # 3) 多策略解析（换 FOURCC / 扫其它索引 / 按设备名）——只对数字索引做。
+        #    ⚠️ 但"按设备标识选中"的那台要**钉死**：只在这台上换格式/后端重试，
+        #    绝不扫其它索引（否则外接相机被占用时会静默打开笔记本内置相机）。
+        if not may_scan_other_indices(self.source_spec, self.device_name):
+            _log(f'{self.name}: 常规打开失败，只在这台设备上重试（不换索引）…')
+            cap, tried, opened_no_frame = self._open_pinned()
+            self._resolve_report = {
+                'tried': tried,
+                'opened': None,
+                'capture': f'只在这台设备（index={self.source}）上重试，未改用其它相机',
+            }
+            if cap is None:
+                self._last_error = self.pinned_failure_hint(
+                    self.device_name or self.source_spec, self.source, opened_no_frame)
+            return cap, self.backend
+
         _log(f'{self.name}: 常规打开失败，进入多策略解析…')
         cap, report = resolve_camera(
             preferred_index=self.source if isinstance(self.source, int) else None,
@@ -266,6 +325,79 @@ class CameraSource:
             self._last_error = ('所有策略都失败（索引/FOURCC/按设备名）；'
                                 f'DirectShow 枚举数见 tried；详细报告在 state()["resolve"]')
         return None, None
+
+    def _open_pinned(self):
+        """只在这台设备上重试（**不换索引**），返回 (cap, [尝试记录], 是否"能打开但没出图")。
+
+        顺序有讲究：**先用同格式 + 更长的首帧等待试一次**。
+        现场那台外接 USB 相机冷启动要 7 秒多才吐第一帧（`tool/camera_check.py` 实测 7.4s），
+        而 `CAMERA.probe_timeout` 默认 8s —— 刚好卡在线上，很容易被误判成"打不开"，
+        于是报出"被别的程序占用"，其实只是它出图慢。
+        之后才换 FOURCC（部分 UVC 只认 YUY2 / 只认 MJPG）。
+        """
+        tried = []
+        opened_no_frame = False
+        wait = max(float(self.probe_timeout or 0), _PINNED_FIRST_FRAME_WAIT)
+        cap, backend_name = _open_capture_ex(
+            self.source, backend=self.backend, width=self.width,
+            height=self.height, fourcc=self.fourcc, only_open=False,
+            grab_timeout=wait)
+        tried.append(f'index={self.source} fourcc={self.fourcc or "默认"} 等首帧 {wait:.0f}s: '
+                     + ('✅' if cap is not None else '无画面'))
+        if cap is not None:
+            # 首帧已经在 _open_capture_ex 里等到了，这里再取一帧确认画面还在流
+            ok, frame = self._grab_first(cap, timeout=3.0)
+            if ok:
+                self._frame_set(frame)
+                self._last_error = ''
+                _log(f'{self.name}: 同设备重试成功 fourcc={self.fourcc or "默认"} '
+                     f'backend={backend_name} size={frame.shape[1]}x{frame.shape[0]}')
+                return cap, tried, opened_no_frame
+            opened_no_frame = True
+            _release_cap(cap)
+
+        for fmt in (self.fourcc, 'MJPG', 'YUY2', None):
+            if fmt == self.fourcc:
+                continue                     # 上面已经用这个格式试过（含长等待）
+            cap, backend_name = _open_capture_ex(
+                self.source, backend=self.backend, width=self.width,
+                height=self.height, fourcc=fmt, only_open=True)
+            tried.append(f'index={self.source} fourcc={fmt or "默认"}: '
+                         + ('✅' if cap is not None else '失败'))
+            if cap is not None:
+                ok, frame = self._grab_first(cap)
+                if ok:
+                    self._frame_set(frame)
+                    self._last_error = ''
+                    _log(f'{self.name}: 同设备换格式打开成功 fourcc={fmt or "默认"} '
+                         f'backend={backend_name} size={frame.shape[1]}x{frame.shape[0]}')
+                    return cap, tried, opened_no_frame
+                opened_no_frame = True
+                _release_cap(cap)
+        return None, tried, opened_no_frame
+
+    @staticmethod
+    def pinned_failure_hint(device, index, opened_no_frame=False,
+                            wait_sec=None):
+        """按标识选中相机失败时的说明（区分为"打不开"和"能打开但没画面"两种）。
+
+        现场这两种情况的处理完全不同：
+        * 打不开 → 多半被占用（浏览器实时监测 / 微信 / GUI）或 USB/驱动问题；
+        * 能打开没画面 → USB 带宽、曝光预热慢、probe_timeout 太小；
+          报成"被占用"会让人白折腾。
+        """
+        who = f'按标识选中的相机（{device or "?"}，index={index}）'
+        if opened_no_frame:
+            wait = _PINNED_FIRST_FRAME_WAIT if wait_sec is None else float(wait_sec)
+            return (f'{who}能打开但 {wait:.0f} 秒内没出画面：'
+                    '常见于 USB 带宽不足 / 曝光预热太慢 / 驱动异常。'
+                    '处理：换个 USB 口（别用扩展坞）、把 config/configs.yaml 的 '
+                    'CAMERA.probe_timeout 调大、或关掉其它正在用相机的程序。'
+                    '不会改用其它相机。')
+        return (f'{who}打不开：可能被别的程序占用（浏览器实时监测 / 微信 / 评分 GUI）、'
+                'USB 没插好或驱动异常。处理：关掉占用方后点「重启相机」；'
+                '仍不行就运行 python tool/camera_check.py 看是索引/格式还是硬件问题。'
+                '不会改用其它相机。')
 
     def _grab_first(self, cap, timeout=None):
         """等首帧（驱动出图有延迟，第一帧常是空的）。

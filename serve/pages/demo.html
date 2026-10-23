@@ -1,131 +1,130 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>株得CropGuard · 演示指挥台</title>
+<!-- 与站点同一套设计令牌（深色板）：指挥台保持深色，但配色/字号层级不再自成一套 -->
+<link rel="stylesheet" href="/static/tokens.css">
 <style>
+  /* 只做别名映射：具体颜色一律来自 /static/tokens.css（详见 scripts/sync_tokens.py） */
   :root {
-    --bg: #0f1712;
-    --panel: #17211a;
-    --panel-2: #1d2a21;
-    --line: #2c3d31;
-    --ink: #eef5ee;
-    --ink-2: #b9c9ba;
-    --ink-3: #7f9483;
-    --brand: #46b97a;
-    --brand-2: #2e8f5b;
-    --gold: #d8b25c;
-    --red: #e0605a;
-    --amber: #e0a94f;
-    --ok: #57c98a;
+    --bg: var(--ground);
+    --panel-2: var(--inset);
+    --brand-2: var(--brand);
+    --gold: var(--signal-ink);
+    --red: var(--risk-high);
+    --amber: var(--risk-mid);
+    --ok: var(--brand);
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
-    font: 16px/1.65 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    font: 14.5px/1.6 var(--font-cn);
   }
   header {
-    padding: 22px 32px 16px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
-    background: linear-gradient(180deg, #142018, #0f1712);
+    padding: 18px 28px 14px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    background: linear-gradient(180deg, var(--panel), var(--bg));
   }
-  header h1 { margin: 0; font-size: 28px; letter-spacing: .5px; }
-  header .sub { color: var(--ink-2); font-size: 14px; margin-top: 2px; }
-  header .clock { margin-left: auto; font-family: Consolas, monospace; color: var(--ink-2); font-size: 14px; }
-  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px 32px 60px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .4px; font-family: var(--font-serif); }
+  header .sub { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+  header .clock { margin-left: auto; font-family: var(--font-mono); color: var(--ink-2); font-size: 13px; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 18px 28px 56px; }
 
-  .pills { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
   .pill {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px;
-    background: var(--panel); font-size: 13.5px; color: var(--ink-2);
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel); font-size: 12.5px; color: var(--ink-2);
   }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; }
-  .dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(87,201,138,.7); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+  .dot.ok { background: var(--ok); }
   .dot.warn { background: var(--amber); }
   .dot.bad { background: var(--red); }
   .pill b { color: var(--ink); font-weight: 600; }
 
-  .seq { display: flex; gap: 10px; flex-wrap: wrap; margin: 4px 0 22px; }
+  .seq { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 18px; }
   .seq a {
-    text-decoration: none; color: var(--ink); background: var(--panel-2);
-    border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; font-size: 14px;
+    text-decoration: none; color: var(--ink-2); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: var(--r); padding: 7px 12px; font-size: 13px;
   }
-  .seq a:hover { border-color: var(--brand); }
+  .seq a:hover { border-color: var(--brand); color: var(--ink); }
 
-  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
   @media (max-width: 1100px) { .cards { grid-template-columns: 1fr; } }
 
   .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
-    padding: 22px; display: flex; flex-direction: column; gap: 14px; position: relative;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+    padding: 18px; display: flex; flex-direction: column; gap: 12px; position: relative;
   }
   .card .no {
-    position: absolute; top: -14px; left: 20px; background: var(--brand-2); color: #fff;
-    font-weight: 700; border-radius: 8px; padding: 2px 10px; font-size: 13px;
+    position: absolute; top: -13px; left: 18px; background: var(--brand-2); color: var(--brand-ink);
+    font-weight: 700; border-radius: var(--r-sm); padding: 2px 9px; font-size: 12px;
   }
-  .card h2 { margin: 6px 0 0; font-size: 21px; }
-  .card .who { color: var(--ink-3); font-size: 13px; }
-  .card ol { margin: 0; padding-left: 22px; color: var(--ink-2); font-size: 14.5px; }
-  .card ol li { margin: 7px 0; }
+  .card h2 { margin: 6px 0 0; font-size: 18px; font-family: var(--font-serif); }
+  .card .who { color: var(--ink-3); font-size: 12.5px; }
+  .card ol { margin: 0; padding-left: 20px; color: var(--ink-2); font-size: 13.5px; }
+  .card ol li { margin: 5px 0; }
   .card ol b { color: var(--gold); font-weight: 600; }
   .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    border: 1px solid transparent; border-radius: 12px; cursor: pointer;
-    padding: 14px 18px; font-size: 17px; font-weight: 700; font-family: inherit;
-    background: var(--brand-2); color: #fff; text-decoration: none;
+    border: 1px solid transparent; border-radius: var(--r); cursor: pointer;
+    padding: 11px 16px; font-size: 15px; font-weight: 700; font-family: inherit;
+    background: var(--brand-2); color: var(--brand-ink); text-decoration: none;
   }
   .btn:hover { background: var(--brand); }
   .btn:disabled { opacity: .55; cursor: not-allowed; }
-  .btn.ghost { background: transparent; border-color: var(--line); color: var(--ink-2); font-size: 14px; padding: 9px 14px; font-weight: 600; }
+  .btn.ghost { background: transparent; border-color: var(--line); color: var(--ink-2); font-size: 13px; padding: 8px 12px; font-weight: 600; }
   .btn.ghost:hover { border-color: var(--brand); color: var(--ink); }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-  .hint { font-size: 13px; color: var(--ink-3); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .hint { font-size: 12px; color: var(--ink-3); }
   .warnbox {
-    border-left: 3px solid var(--amber); background: rgba(224,169,79,.08);
-    padding: 9px 12px; border-radius: 8px; font-size: 13.5px; color: #f0d9a8;
+    border-left: 3px solid var(--amber); background: var(--warn-bg);
+    padding: 8px 11px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--warn-ink);
   }
-  .state { font-size: 13.5px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+  .state { font-size: 13px; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
 
-  .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink-2); }
-  .switch input { width: 46px; height: 26px; appearance: none; background: #33463a; border-radius: 999px; position: relative; cursor: pointer; outline: none; }
+  .switch { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
+  .switch input { width: 42px; height: 24px; appearance: none; background: var(--line-strong); border-radius: 999px; position: relative; cursor: pointer; outline: none; }
   .switch input:checked { background: var(--brand-2); }
   .switch input::after {
-    content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+    content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
     border-radius: 50%; background: #fff; transition: left .15s;
   }
-  .switch input:checked::after { left: 23px; }
+  .switch input:checked::after { left: 21px; }
 
   .qr { width: 168px; height: 168px; background: #fff; padding: 8px; border-radius: 10px; display: block; }
   .phone-url { font-family: Consolas, monospace; font-size: 15px; color: var(--gold); word-break: break-all; }
 
   .live-wrap {
-    margin-top: 22px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 16px; padding: 14px; display: none;
+    margin-top: 18px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--r-lg); padding: 12px; display: none;
   }
   .live-wrap.on { display: block; }
-  .live-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
-  .live-head h2 { margin: 0; font-size: 18px; }
+  .live-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .live-head h2 { margin: 0; font-size: 16px; font-family: var(--font-serif); }
   .live-head .grow { flex: 1; }
-  .live-frame { width: 100%; height: 62vh; min-height: 420px; border: 0; border-radius: 12px; background: #0a0f0b; display: block; }
+  .live-frame { width: 100%; height: 62vh; min-height: 420px; border: 0; border-radius: var(--r); background: var(--stage); display: block; }
 
-  .decision { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; color: var(--ink-2); }
+  .decision { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 9px 11px; font-size: 12.5px; color: var(--ink-2); }
   .decision b { color: var(--ink); }
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 12px; background: #2a3b2f; color: var(--ink-2); margin-left: 6px; }
-  .badge.rule { background: #2f3f4f; color: #a9cbe8; }
-  .badge.edge { background: #3a2f4f; color: #d3b8f0; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: var(--r-sm); font-size: 11.5px; background: var(--inset); color: var(--ink-2); margin-left: 6px; }
+  .badge.rule { background: var(--inset); color: var(--ink-2); }
+  .badge.edge { background: var(--inset); color: var(--ink-2); }
 
-  .checklist { margin-top: 22px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; }
-  .checklist h3 { margin: 0 0 10px; font-size: 17px; }
-  .checklist ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 6px 22px; font-size: 14px; color: var(--ink-2); }
+  .checklist { margin-top: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 12px 16px; }
+  .checklist summary { display: flex; align-items: center; gap: 10px; cursor: pointer; color: var(--ink); font-weight: 600; font-size: 14px; }
+  .checklist summary .badge-lite { margin-left: auto; font-family: var(--font-mono); font-size: 12px; }
+  .checklist[open] summary { margin-bottom: 10px; }
+  .checklist ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 20px; font-size: 13px; color: var(--ink-2); }
   .checklist li::before { content: "○ "; color: var(--ink-3); }
   .checklist li.pass::before { content: "✅ "; }
   .checklist li.fail::before { content: "❌ "; color: var(--red); }
-  details { margin-top: 18px; color: var(--ink-2); font-size: 14px; }
+  details { margin-top: 14px; color: var(--ink-2); font-size: 13px; }
   details summary { cursor: pointer; color: var(--ink); font-weight: 600; }
-  details ol { margin: 8px 0 0; }
-  footer { margin-top: 28px; color: var(--ink-3); font-size: 13px; line-height: 1.8; }
+  details ol { margin: 8px 0 0; padding-left: 20px; }
+  footer { margin-top: 24px; color: var(--ink-3); font-size: 12px; line-height: 1.8; }
 </style>
 </head>
 <body>
@@ -156,12 +155,9 @@
       <h2>20 个实体样本 · 180 秒</h2>
       <div class="who">用桌面 GUI（评分面板在这里）</div>
       <ol>
-        <li><b>先关掉</b>「实时监测」标签页（相机只能被一个程序用）</li>
-        <li>点下面的按钮 → 桌面会弹出 GUI 窗口（约 5–10 秒）</li>
-        <li>点「打开摄像头」→ 画面出来后点「开始运行」</li>
-        <li>先空拍一张热身 → 点「↻ 新一轮评测」清空</li>
-        <li>逐个放样本 → 点「📷 拍照识别」→ 换下一只（计时自动开始）</li>
-        <li>满 20 张自动停表 → 评委判 ✓/✗ →「导出评分报告」</li>
+        <li>点按钮 → 桌面弹出 GUI（5–10 秒）：「打开摄像头」→「开始运行」</li>
+        <li>放样本 →「📷 拍照识别」→ 换下一只（计时自动开始，满 20 张停表）</li>
+        <li>评委判 ✓/✗ →「导出评分报告」</li>
       </ol>
       <div class="row">
         <button class="btn" id="btnGui">打开评分 GUI</button>
@@ -177,11 +173,8 @@
       <h2>定点监控 · 自动喷洒</h2>
       <div class="who">外置摄像头（模拟片区 A 定点作业）</div>
       <ol>
-        <li>把 <b>3 只以上</b>同种害虫放进机位视野（或让它们占满画面）</li>
-        <li>点「开始定点监控」→ 画面就在本页下方出现（不用切标签）</li>
-        <li>等 <b>1–2 秒</b>：风险条变「高风险」→ 自动喷 + 语音播报</li>
-        <li>指一下下方「联动记录」，新增一条就说明闭环成功</li>
-        <li><b>演完马上点「关闭监控」</b>（释放相机，否则下一套打不开）</li>
+        <li>放 <b>3 只以上</b>同种害虫 → 点「开始定点监控」（画面在本页下方）</li>
+        <li>风险变「高风险」→ 自动喷 + 语音；演完点「关闭监控」释放相机</li>
       </ol>
       <div class="row">
         <button class="btn" id="btnLive">开始定点监控（在本页看）</button>
@@ -193,6 +186,19 @@
         <span>自动喷洒总闸（关 = 只播语音、不喷）</span>
       </label>
       <div class="state"><span class="dot" id="sprayDot"></span><span id="sprayState">读取节点状态…</span></div>
+      <details id="targetsBox">
+        <summary>节点地址（现场就改这里，不用改配置、不用重启）</summary>
+        <div class="hint" style="margin:6px 0">
+          节点 IP 印在它自己的<b>串口</b>里（<code>WIFI_OK IP=x.x.x.x</code>），热点 DHCP 会变。
+          协议：手写 sketch（雾化片）选 <code>mist</code>，项目固件 http_node 选 <code>json</code>。
+          填完点「保存并应用」立即生效，并记到 <code>config/spray_targets.local.json</code>（下次启动仍有效）。
+        </div>
+        <div id="targetRows"></div>
+        <div class="row" style="align-items:center;gap:8px">
+          <button class="btn ghost" id="btnTargetsSave">保存并应用</button>
+          <span class="hint" id="targetsMsg"></span>
+        </div>
+      </details>
       <div class="warnbox">现场把雾化片放进水杯/托盘里再喷，别对着评委和电脑。</div>
     </section>
 
@@ -210,11 +216,8 @@
         </div>
       </div>
       <ol>
-        <li>手机开页面 →「📷 拍照模式」→ 对陌生害虫拍一张</li>
-        <li>看结果：虫种 + 置信度 + 风险 + 防治建议</li>
-        <li>下滑到问答，问「这个虫怎么防治？」→ 大模型给建议</li>
-        <li>输入「给 A 片区喷 3 秒」→「解析指令」（此时还没喷）</li>
-        <li>确认执行 → 设备动作 + 语音 + 历史新增</li>
+        <li>手机扫码 →「拍照模式」拍一张 → 看虫种 / 风险 / 防治建议</li>
+        <li>说「给 A 片区喷 3 秒」→「解析指令」→ 确认执行</li>
       </ol>
       <label class="switch">
         <input type="checkbox" id="phoneAuto">
@@ -236,17 +239,17 @@
     <iframe class="live-frame" id="liveFrame" title="定点监控实时画面"></iframe>
   </section>
 
-  <!-- ==================== 自检 ==================== -->
-  <div class="checklist">
-    <h3>一键自检（上台前点一次，全绿再演）</h3>
+  <!-- ==================== 自检（默认折叠，只看徽标） ==================== -->
+  <details class="checklist" id="checkBox">
+    <summary>一键自检<span class="badge-lite" id="checkSummary">未自检</span></summary>
     <ul id="checkList">
       <li>等待检查…</li>
     </ul>
-    <div class="row" style="margin-top:12px">
+    <div class="row" style="margin-top:10px">
       <button class="btn ghost" id="btnCheck">重新自检</button>
       <span class="hint" id="checkHint"></span>
     </div>
-  </div>
+  </details>
 
   <details>
     <summary>出问题了怎么办（点开看 6 条）</summary>
@@ -303,8 +306,16 @@
       ['服务', 'ok', '服务器在线'],
       ['模型', st.model && st.model.classes ? 'ok' : 'bad',
         '模型 ' + (st.model ? st.model.classes : '?') + ' 类 · ' + (st.model ? st.model.device : '-')],
-      ['相机', st.camera && st.camera.open ? 'ok' : 'warn',
-        st.camera && st.camera.open ? ('相机已打开 ' + (st.camera.fps || '-') + ' fps') : '相机未打开（用的时候才占）'],
+      ['相机', (st.camera && st.camera.open) ? 'ok'
+        : ((st.camera && st.camera.last_error) ? 'bad' : 'warn'),
+        (st.camera && st.camera.open)
+          ? ('相机已打开 · ' + (st.camera.device || '?') +
+             (st.camera.index === null || st.camera.index === undefined
+               ? '' : ' (index ' + st.camera.index + ')') +
+             ' · ' + (st.camera.fps || '-') + ' fps')
+          : ((st.camera && st.camera.last_error)
+              ? ('相机打不开：' + String(st.camera.last_error).slice(0, 70))
+              : ('相机未打开（用的时候才占）· 配置 ' + ((st.camera && st.camera.configured_spec) || '-')))],
       ['节点', (st.spray && st.spray.nodes && st.spray.nodes.length &&
         st.spray.nodes.every((n) => n.online)) ? 'ok' : 'bad',
         (st.spray && st.spray.nodes && st.spray.nodes.length)
@@ -337,14 +348,82 @@
     const s = st.spray || {};
     const nodes = s.nodes || [];
     const online = nodes.filter((n) => n.online).length;
-    $('sprayDot').className = 'dot ' + (nodes.length && online === nodes.length ? 'ok' :
-      (online ? 'warn' : 'bad'));
-    $('sprayState').textContent = nodes.length
+    const spraying = nodes.filter((n) => n.spraying);      // mist 状态页解析出来的
+    $('sprayDot').className = 'dot ' + (spraying.length ? 'ok' :
+      (nodes.length && online === nodes.length ? 'ok' : (online ? 'warn' : 'bad')));
+    $('sprayState').textContent = (nodes.length
       ? ('节点 ' + online + '/' + nodes.length + ' 在线 · 传输 ' + (s.transport || '-') +
          ' · 自动喷洒 ' + (s.auto ? '开' : '关'))
-      : ('节点未配置 · 传输 ' + (s.transport || '-'));
+      : ('节点未配置 · 传输 ' + (s.transport || '-')))
+      + (spraying.length
+          ? (' · 正在喷雾' + (spraying[0].remain ? '（剩 ' + spraying[0].remain + ' 秒）' : ''))
+          : '')
+      + (s.placeholder ? ' · ⚠ 还是占位地址（下面「节点地址」里改成串口打印的 IP）' : '');
     const cb = $('autoSpray');
     if (document.activeElement !== cb) cb.checked = !!s.auto;
+  }
+
+  // ---------- 节点地址（现场热改，见 app/spray_targets.py） ----------
+  let targetRows = [];
+
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function renderTargets() {
+    const box = $('targetRows');
+    if (!box) return;
+    box.innerHTML = targetRows.map((t, i) =>
+      '<div class="row" style="gap:6px;margin:4px 0;align-items:center">' +
+        '<input data-i="' + i + '" data-k="group" value="' + escHtml(t.group) +
+          '" style="width:64px" title="分组（g1/g2）">' +
+        '<input data-i="' + i + '" data-k="url" value="' + escHtml(t.url) +
+          '" placeholder="http://10.x.x.x" style="flex:1;min-width:200px" title="节点地址">' +
+        '<select data-i="' + i + '" data-k="protocol" title="协议">' +
+          ['mist', 'json'].map((p) => '<option value="' + p + '"' +
+            (t.protocol === p ? ' selected' : '') + '>' + p + '</option>').join('') +
+        '</select>' +
+      '</div>').join('');
+    box.querySelectorAll('input,select').forEach((el) => {
+      el.addEventListener('input', (ev) => {
+        const i = Number(ev.target.getAttribute('data-i'));
+        const k = ev.target.getAttribute('data-k');
+        if (targetRows[i]) targetRows[i][k] = ev.target.value;
+      });
+    });
+  }
+
+  async function loadTargets() {
+    try {
+      const r = await getJSON('/api/spray/targets');
+      targetRows = (r.targets || []).length
+        ? r.targets
+        : [{ group: 'g1', url: '', protocol: 'mist' }, { group: 'g2', url: '', protocol: 'mist' }];
+      renderTargets();
+    } catch (e) { /* 页面其它功能照常 */ }
+  }
+
+  async function saveTargets() {
+    const msg = $('targetsMsg');
+    msg.textContent = '正在连接节点…';
+    try {
+      const r = await getJSON('/api/spray/targets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targets: targetRows, persist: true }),
+      });
+      const nodes = r.nodes || [];
+      const online = nodes.filter((n) => n.online).length;
+      msg.textContent = r.success
+        ? ('已应用：' + online + '/' + nodes.length + ' 在线' +
+           (r.placeholder ? '（还是占位地址，改成串口打印的 IP）' : '') +
+           (r.errors && r.errors.length ? ' · ' + r.errors.join('；') : ''))
+        : ('没应用：' + ((r.errors || []).join('；') || '检查地址'));
+      refresh();
+    } catch (e) {
+      msg.textContent = '失败：' + e.message;
+    }
   }
 
   function renderPhone(st) {
@@ -401,11 +480,21 @@
       return;
     }
     const nodes = (st.spray && st.spray.nodes) || [];
+    // 节点不在线时把"为什么"直接写在自检行里 —— 现场最常见的两种：
+    // ① 配置还是仓库占位地址；② 地址改了但节点没上电 / 不在同一个热点。
+    const sTargets = (st.spray && st.spray.targets) || [];
+    const sUrls = sTargets.map((t) => t.url).filter(Boolean).join('、');
+    const sprayHint = (st.spray && st.spray.placeholder)
+      ? ('（现在是占位地址 ' + (sUrls || '172.23.153.231') +
+         '：点第二套卡片的「节点地址」，改成节点串口打印的 IP）')
+      : (sTargets.length && !nodes.some((n) => n.online)
+          ? '（地址已配置但连不上：节点上电了吗？手机热点/网段对吗？）' : '');
     const checks = [
       ['服务器在线', true],
       ['模型已加载（27 类）', !!(st.model && st.model.classes)],
       ['喷淋链路已配置', !!(st.spray && st.spray.available)],
-      ['喷淋节点至少 1 个在线（没有也能演，只是设备不动）', nodes.some((n) => n.online)],
+      ['喷淋节点至少 1 个在线（没有也能演，只是设备不动）' + sprayHint,
+        nodes.some((n) => n.online)],
       ['语音后端就绪', !!(st.tts && st.tts.ready)],
       ['Ollama 就绪（问答要用）', !!(st.ollama && st.ollama.up)],
       ['看板快照已生成', !!(st.dashboard && st.dashboard.snapshot)],
@@ -423,6 +512,12 @@
     $('checkHint').textContent = fail === 0
       ? '全部通过，可以上台。'
       : (fail + ' 项未就绪：红叉不是"坏了"，按卡片里的降级办法继续演。');
+    // 折叠状态下也要能一眼看到结果：徽标放在 summary 上
+    const sum = $('checkSummary');
+    if (sum) {
+      sum.textContent = fail === 0 ? '全部通过' : (fail + ' 项未就绪');
+      sum.style.color = fail === 0 ? 'var(--brand)' : 'var(--risk-high)';
+    }
   }
 
   function liveOpen() {
@@ -526,9 +621,11 @@
   });
 
   $('btnCheck').addEventListener('click', runCheck);
+  $('btnTargetsSave').addEventListener('click', saveTargets);
 
   refresh();
   runCheck();
+  loadTargets();
   setInterval(refresh, 4000);
 })();
 </script>

@@ -69,13 +69,14 @@ export function useStation(opts: { history?: boolean } = {}) {
 }
 
 /* ---------------- 提示条 ---------------- */
-export interface Toast { id: number; text: string; tone: 'ok' | 'bad' }
+export interface Toast { id: number; text: string; tone: 'ok' | 'bad' | 'warn' }
 const toasts = ref<Toast[]>([])
 let toastSeq = 0
-export function toast(text: string, tone: 'ok' | 'bad' = 'ok') {
+export function toast(text: string, tone: 'ok' | 'bad' | 'warn' = 'ok') {
   const id = ++toastSeq
   toasts.value = [...toasts.value.slice(-2), { id, text, tone }]
-  window.setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id) }, tone === 'bad' ? 4200 : 2600)
+  const ttl = tone === 'bad' ? 4200 : tone === 'warn' ? 3400 : 2600
+  window.setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id) }, ttl)
 }
 export const useToasts = () => toasts
 

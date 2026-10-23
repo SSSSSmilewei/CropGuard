@@ -230,6 +230,59 @@ class SprayController:
                 for g, u in self.http_targets.items()
                 if self.target_protocols.get(g) == 'mist']
 
+    # ==================== 现场改节点地址（不改 YAML、不重启） ====================
+    def http_target_rows(self):
+        """当前 http 目标表（指挥台「节点地址」面板据此渲染，顺序 = 配置顺序）。"""
+        return [{'group': g, 'url': u,
+                 'protocol': self.target_protocols.get(g, self.default_protocol)}
+                for g, u in self.http_targets.items()]
+
+    def set_http_targets(self, targets):
+        """运行时替换 http 节点地址表，返回 ``(applied, errors)``。
+
+        现场节点是 DHCP 拿地址、只印在串口上；改 ``configs.yaml`` 要重启服务，
+        比赛现场很危险 —— 所以指挥台直接调这里热更新，持久化由调用方负责
+        （``app.spray_targets.save``）。
+
+        校验（宁可拒绝，也别把人送到错误地址上）：
+        * group 不能空、同组重复以最后一项为准；
+        * url 必须是 http:// 或 https:// 开头（mist 固件没有 TLS，也别写裸 IP）；
+        * protocol 只认 json / mist，认不出来按 default_protocol（不静默当 mist）。
+        全部不合格时**不改动**现有地址表，把原因原样带回去。
+        """
+        applied, errors = [], []
+        for item in (targets or []):
+            if not isinstance(item, dict):
+                errors.append(f'忽略一项（不是对象）：{item!r}')
+                continue
+            group = str(item.get('group', '') or '').strip()
+            url = str(item.get('url', '') or '').strip()
+            proto = str(item.get('protocol', '') or '').strip().lower()
+            if not group:
+                errors.append('有一项没写 group，已忽略')
+                continue
+            if not url:
+                errors.append(f'{group}：地址为空，已忽略')
+                continue
+            if not url.lower().startswith(('http://', 'https://')):
+                errors.append(f'{group}：地址要以 http:// 开头（现在是 {url}）')
+                continue
+            applied.append({'group': group, 'url': url,
+                            'protocol': proto if proto in self.PROTOCOLS
+                            else self.default_protocol})
+        if not applied:
+            return [], (errors or ['没有可用的节点地址'])
+        # 同组重复：后面的覆盖前面的，但顺序按第一次出现（面板不乱跳）
+        merged = {}
+        for row in applied:
+            merged[row['group']] = row
+        applied = list(merged.values())
+        self.http_targets = {row['group']: row['url'] for row in applied}
+        self.target_protocols = {row['group']: row['protocol'] for row in applied}
+        with self._probe_lock:                       # 清了缓存，下一次探活立刻重连
+            self._probe_cache = {'ts': 0.0, 'nodes': []}
+        return applied, errors
+
     def _stop_url(self, url):
         """把节点 /spray 地址换成 /stop（固件 http_node 提供 /stop）。"""
         u = str(url or '')
@@ -249,6 +302,15 @@ class SprayController:
 
     # ==================== 下发 ====================
 
+    @staticmethod
+    def _decode_utf8(raw):
+        """按 UTF-8 解码（解不开就用 replace，绝不让状态解析抛异常）。"""
+        data = raw or b''
+        try:
+            return data.decode('utf-8')
+        except UnicodeDecodeError:
+            return data.decode('utf-8', 'replace')
+
     def _http_get(self, url, timeout=None):
         """GET 一个地址，返回 (status_code, text)；连不上时返回 (None, 原因)。
 
@@ -261,12 +323,7 @@ class SprayController:
             resp = (self._http or requests).get(url, timeout=float(timeout or self.http_timeout))
         except Exception as exc:
             return None, f'{type(exc).__name__}: {exc}'
-        raw = resp.content or b''
-        try:
-            text = raw.decode('utf-8')
-        except UnicodeDecodeError:
-            text = raw.decode('utf-8', 'replace')
-        return resp.status_code, text
+        return resp.status_code, self._decode_utf8(resp.content)
 
     def _mist_url_for(self, base, command):
         """把一条通用指令翻译成 sketch 的 GET 地址。"""
@@ -289,7 +346,11 @@ class SprayController:
         所以必须读响应体判断有没有真的执行 —— 只看状态码会把"拒绝启动"当成功。
         """
         target = self._mist_url_for(self._base_url(url), command)
-        code, text = self._http_get(target)
+        # 固件的 /start、/startDirect 里是 digitalWrite → delay(1000) → 模拟按键脉冲 200ms，
+        # 要 1.2 秒以上才回包；而 SPRAY.http_timeout 配的是 1.0 秒 —— 用 1.0 秒会在
+        # "设备其实已经喷了"的情况下报失败（现场会以为没喷，反复点 → 固件回"正在运行中"）。
+        # 读超时给足 3.5 秒；/stop 是立即返回，多等不会有害。
+        code, text = self._http_get(target, timeout=max(self.http_timeout, 3.5))
         if code is None:
             return False, str(text)
         if not (200 <= code < 300):
@@ -543,12 +604,17 @@ class SprayController:
     # ==================== 节点探活（/api/spray/status 用） ====================
 
     def probe_nodes(self, timeout=0.8, max_age=3.0):
-        """并发探测每个 http 节点的 GET /status，带短缓存。
+        """并发探测每个 http 节点是否在线，带短缓存。
 
-        返回 [{group, name, url, online, latency_ms, ip, rssi, spraying, count, error}]。
+        返回 [{group, name, url, protocol, online, latency_ms, spraying, mode, remain, error}]。
         非 http 传输返回空表（串口/MQTT 没有逐节点探活的通道）。
-        mist 节点（手写 sketch）的 /status 是 HTML 状态页：能连通即 online，
-        字段解析不到就留空，不影响"在线"判断。
+
+        ⚠️ 探活路径按固件区分（现场踩过）：
+        * ``mist``（手写 sketch）：**没有 /status 这个路由**，只有 ``/``（状态页）/
+          ``/start`` / ``/startDirect`` / ``/stop``。以前统一打 /status → 404 →
+          明明在线、手机能控制它喷的节点被判成"离线"，演示台一直 ❌。
+          所以 mist 走 ``/``：状态页就在根路径，顺便读"在喷/空闲/剩余秒"。
+        * ``json``（项目固件 http_node）：有 ``/status``，回 JSON。
         """
         if self.transport != 'http' or self._http is None or not self.http_targets:
             return []
@@ -560,25 +626,42 @@ class SprayController:
 
         def _one(i, group, url):
             base = self._base_url(url)
+            proto = self.target_protocols.get(group, self.default_protocol)
             row = {'group': group, 'name': self.node_names.get(group, ''), 'url': url,
-                   'online': False, 'latency_ms': None}
+                   'protocol': proto, 'online': False, 'latency_ms': None}
             t0 = time.time()
             try:
-                resp = (self._http or requests).get(base + '/status', timeout=timeout)
-                row['latency_ms'] = int((time.time() - t0) * 1000)
-                row['online'] = 200 <= resp.status_code < 300
-                try:
-                    data = resp.json()
-                except ValueError:
-                    data = {}
-                if isinstance(data, dict):
-                    for k in ('ip', 'rssi', 'spraying', 'count'):
-                        if k in data:
-                            row[k] = data[k]
-                    if data.get('name') and not row['name']:
-                        row['name'] = str(data['name'])
-                if not row['online']:
-                    row['error'] = f'返回 {resp.status_code}'
+                if proto == 'mist':
+                    resp = (self._http or requests).get(base + '/', timeout=timeout)
+                    row['latency_ms'] = int((time.time() - t0) * 1000)
+                    row['online'] = 200 <= resp.status_code < 300
+                    if row['online']:
+                        # ⚠️ 固件是 server.send(200, "text/html", page) —— **不带 charset**。
+                        # Content-Type 没 charset 时 requests 的 resp.text 按 ISO-8859-1 解，
+                        # 中文全变乱码，"空闲/正在雾化"解析不出来 → 会把空闲节点显示成
+                        # "正在喷雾"。手写 sketch 输出的是 UTF-8，必须显式解码。
+                        st = self._parse_mist_status(self._decode_utf8(resp.content))
+                        row['spraying'] = bool(st.get('running'))
+                        row['mode'] = st.get('mode')
+                        row['remain'] = st.get('remain')
+                    else:
+                        row['error'] = f'返回 {resp.status_code}'
+                else:
+                    resp = (self._http or requests).get(base + '/status', timeout=timeout)
+                    row['latency_ms'] = int((time.time() - t0) * 1000)
+                    row['online'] = 200 <= resp.status_code < 300
+                    try:
+                        data = resp.json()
+                    except ValueError:
+                        data = {}
+                    if isinstance(data, dict):
+                        for k in ('ip', 'rssi', 'spraying', 'count'):
+                            if k in data:
+                                row[k] = data[k]
+                        if data.get('name') and not row['name']:
+                            row['name'] = str(data['name'])
+                    if not row['online']:
+                        row['error'] = f'返回 {resp.status_code}'
             except Exception as exc:
                 row['error'] = f'{type(exc).__name__}: {exc}'
             out[i] = row

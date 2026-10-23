@@ -3,7 +3,7 @@
 > 2026-10-21 整合：本仓库 = 主线最新（手机端 http/https 合一、离线看板、mist 雾化、相机看门狗）
 > **+ 学弟 PR#1（Vue 3 前端 + 喷淋/流修复）+ 队友 PR#3（EdgeJev 本地决策 + 测评页）**。
 > 分支 `main`，提交 `merge: 接入队友 EdgeJev…` 之后为整合结果。比赛演示流程见
-> `docs/株得CropGuard-总手册.md`（演示/答辩/整合/EdgeJev 全在一份）。
+> `README.md`（演示/答辩/整合/页面地图全在一份；旧的总手册已并入）。
 
 ## 项目位置 / 仓库
 - 工作目录：`D:\Dev Projects\Pycharm\yolov8`
@@ -22,7 +22,9 @@
 摄像头/手机 ──► FastAPI(8080 HTTP + 8443 HTTPS) ──► YOLOv8 27类（best.pt, CPU 100–250ms/张）
                         │                            └─ 风险评估 assess_risk
                         ├─ 前端 web/dist（Vue3，离线打包）: / /stream /ask /spray /system /dashboard
-                        ├─ 手机端原生页 /m（唯一入口，http→https 自动升级、canvas 叠框、雾化卡片）
+                        ├─ 手机端 /m（Vue，与站点同一套令牌；http→https 自动升级、断线重连、雾化卡片）
+                        ├─ 现场评分 /eval（同一个检测台的「评分作业」模式：拍照→判分→导出）
+                        ├─ 原生兜底页 /m-classic /eval-classic /classic（前端出问题时的后路）
                         ├─ EdgeJev 本地类型化决策（规则优先 + 高置信兜底，只理解不下发）
                         └─ 执行层 HTTP─► ESP32 节点（mist: GET /start?time=N；json: POST /spray）
 ```
@@ -34,11 +36,14 @@
 | `/` `/stream` `/ask` `/spray` `/system` | Vue SPA（`web/dist`） | 检测台/实时监测/问答/喷淋/设备 |
 | `/dashboard` | Vue 看板 | 数据来自 `GET /api/dashboard`（`output/dashboard/snapshot.json`） |
 | `/dashboard-offline` | 原生单文件看板 | 快照内联，可 `file://` 双击打开，断网兜底 |
-| `/m` | 原生手机页 | **唯一手机入口**（保留主线实测版，非 Vue） |
-| `/eval` | 测评动效页 | 20 样本 / 180 秒计时 + 判分 + CSV 导出，评分口径与 GUI 共用 |
+| `/eval` | **现场评分（Vue）** | 与 `/` 同一个检测台的「评分作业」模式：摄像头拍照→识别→判对错→30 分→导出 CSV；`/?mode=eval` 等价 |
+| `/eval-classic` | 原生评分页 | 旧版单页（含 20 样本动效/判分/CSV），前端出问题时的兜底 |
 | `/edge` | EdgeJev 决策点页 | 选择题式（指令解析/虫情研判实验性/决策点规划），不做自由问答 |
 | `/classic` | 旧版 PC 首页 | 前端出问题时的兜底页（上传 + 手机二维码） |
+| `/m` | **手机端（Vue）** | 与站点同一套令牌/组件；http→https 自动升级、WS 断线重连、雾化卡片 |
+| `/m-classic` | 原生手机页 | 旧版单页（实测过的 https 升级/同源 API/canvas 叠框/雾化卡片），兜底用 |
 | `/api/mist/*` | 雾化 REST | status/start/direct/stop（mist 固件适配在本页后端） |
+| `/api/eval/snapshot` | 评分快照 | POST 存带框图（`output/snapshots/`，与 GUI 同目录）、GET 读回（白名单） |
 
 ## 启动 / 自检
 **现场（小白）只用双击**：`启动演示系统.bat`（起服务 + 开 `/demo`）、`停止演示系统.bat`、
@@ -49,15 +54,20 @@ py -3.14 tool/camera_probe.py          # 认相机 → 把 VID 写进 config CAM
 $env:CG_DEVICE='cpu'; py -3.14 api_server.py
 py -3.14 scripts/build_snapshot.py --samples pictures20   # 看板快照（默认读现成 per_class_val，约 1 分钟）
 py -3.14 scripts/build_dashboard.py                      # 离线看板 HTML（读现成产物，秒级）
-py -3.14 tests/run_tests.py                              # 244 passed / 0 failed
+py -3.14 scripts/sync_tokens.py                          # 设计令牌 → serve/static/tokens.css（原生页用）
+cd web; npm install; npm run build                       # 前端改完必须重建 web/dist（现场无 Node）
+py -3.14 tests/run_tests.py                              # 270 passed / 0 failed
 python main.py                                           # PyQt5 GUI（指挥台也能一键拉起）
 ```
 启动横幅必须看到：`Spray transport/http_targets`、`雾化节点(mist)=[…]`、`[CERT] ✅ SAN…`、
 `手机会话页(唯一入口): https://<IP>:8443/m`、`语音: engine=… ready=True`。
 
 ## 整合口径（重要，别改回去）
-1. **手机端保留主线 `serve/mobile.py` 一整套**，不从 SPA 接管 `/m`（`serve/spa.py` 的 ROUTES 已删 `/m`）。
-   Vue 里有 `MobileView`/`MobileDetect` 源码，但没路由——它们没有 http→https 自动升级、断线重连、雾化卡片。
+1. **手机端 `/m` 已由 Vue 接管（2026-10-24 一体化改造）**：与站点同一套设计令牌与组件，
+   原生页 `serve/mobile.py` 保留为 `/m-classic` 兜底。Vue 版必须保住三件事（原来只有原生版有）：
+   http→https 自动升级（`composables/phoneEntry.ts`，`?http=1` 留 HTTP、绝不给死链）、
+   `/ws/phone` 断线重连（`MobileDetect.connectWs`）、雾化卡片（`components/MistCard.vue`）。
+   改这三处前先想清楚：现场手机是唯一的人机协同演示入口。
 2. **`/dashboard` 归 Vue（实时），`/dashboard-offline` 是离线快照**；旧的 `scripts/build_dashboard.py`
    继续生成 HTML，新加的 `scripts/build_snapshot.py` 生成 `output/dashboard/snapshot.json + thumbs/`。
 3. **`/ws/stream` 推原始帧 + `image_size`**，框由前端叠；`result_image` 里不含框。
@@ -91,8 +101,21 @@ python main.py                                           # PyQt5 GUI（指挥台
 - ESP32 ×3（2 用 1 备）+ 光耦继电器（低电平触发）+ 5V 超声雾化片 ×2；`ESP32/` PlatformIO，8 env。
 - 喷淋走 HTTP 方案甲：`config/configs.yaml` 的 `SPRAY.http_targets`，每项带 `protocol: json|mist`。
   **仓库里是占位 IP（172.23.153.231）且 g1/g2 相同**——现场必须按节点串口打印的 IP 改，改完重启服务。
+  **现场推荐不改 YAML**：`/demo` 第二套卡片的「节点地址」→「保存并应用」= 热更新（`POST /api/spray/targets`，
+  立刻重新探活）并落 `config/spray_targets.local.json`（启动时优先于 YAML，**不入库**）。
+  `/demo` 自检会直说「还是占位地址」或「地址已配置但连不上」，不再只给一个 ❌ 让人猜。
 - mist 固件（手写 sketch）：`GET /start?time=N`、`/startDirect`（不自停，服务器 300s 兜底）、`/stop`；
   **永远回 200**，必须读响应体判成败。
+  **该固件没有 `/status` 路由**（只有 `/` 状态页 + 上面三个动作）——探活必须走 `/`，
+  以前统一打 `/status` → 404 → 在线节点被判"离线"，演示台「喷淋节点至少 1 个在线」一直 ❌
+  （这就是第一套演示 BUG 2 的真因，跟 IP 无关）。`/start` 里有 `delay(1000)`+模拟按键 200ms，
+  要 1.2 秒才回包，所以 mist 写超时固定给 ≥3.5 秒（配置里的 `http_timeout: 1.0` 只用于 json）。
+  现场是**单节点**演示：`http_targets` 只写 g1 一行，片区 A/B 只是讲解概念；
+  想让"片区B"按钮也动，再加一行填同一个 IP 即可。
+  还有一个编码坑：固件是 `server.send(200, "text/html", page)`，**响应头不带 charset**，
+  requests 的 `resp.text` 会按 ISO-8859-1 解 → 中文变乱码 → 「空闲」解析不出来，
+  页面把空闲节点显示成"正在喷雾"。解析状态页必须 `resp.content.decode('utf-8')`
+  （代码里统一走 `_decode_utf8()`）。
 
 ## 样本与测试集
 - 比赛 20 图：`pictures20/`（20 张 jpg，文件名 `NNNN_类别_confX.XX_*.jpg`；不入 git）
@@ -101,7 +124,7 @@ python main.py                                           # PyQt5 GUI（指挥台
 - ⚠️ 标签噪声：蝗虫（mAP50 .66，图错标成盲蝽）、光肩星天牛（标签可疑）——别拿去现场凑数
 
 ## EdgeJev（队友 PR#3 · 本机已部署）
-- 包：`edgejev/`（Apache-2.0，上游 yzfly/edgejev）；适配层 `app/edge_engine.py`；文档 `docs/株得CropGuard-总手册.md` 第 7 节
+- 包：`edgejev/`（Apache-2.0，上游 yzfly/edgejev）；适配层 `app/edge_engine.py`；文档 `README.md` 第 9 节
 - 模型：`edge_models/jev-int8/`（**本机已构建，369MB**：`model.onnx` 335MB + `tokenizer.json` + `edgejev.json`；
   **不入 git**，换机要重跑 `scripts/build_edge_model.py` 或整目录拷贝）
 - 构建记录（2026-10-23 本机，int8）：官方示例 `dept=billing 0.993`、单句 77ms；验证通过。
@@ -125,8 +148,27 @@ python main.py                                           # PyQt5 GUI（指挥台
 5. 内嵌 JS / dist 资源改动后建议 `node --check`，并在浏览器实开一次（本机 Edge headless 不可用，
    用 Playwright 校验，见 `scripts/web_smoke.py` 如存在）。
 6. 手机端 http 打开 `/m` 会自动升级 https；不想升级加 `?http=1`。HTTPS 没起来时页面不会给 https 死链。
+7. **`*.bat` 必须是 CRLF 换行**（2026-10-23 第一套演示的真凶）：`启动演示系统.bat` 曾是无 BOM UTF-8 +
+   纯 LF，cmd 解析 LF 换行的中文批处理会**错位**——`echo`/`REM` 前缀被吃掉、残句当命令执行
+   （`'xxx' 不是内部或外部命令`），流程走不到 `start "" .../demo`，双击后窗口闪一下就没有页面，
+   但服务器其实起得来（手工开 /demo 一切正常）。已加 `.gitattributes`（`*.bat text eol=crlf`）
+   + `tests/test_bat_launcher.py` 兜底；现场机器多是"拷过去/解压"的目录，不受 `core.autocrlf` 保护。
+   改完 .bat 记得确认换行没被编辑器改成 LF（`git ls-files --eol 启动演示系统.bat` 看 `w/crlf`）。
+8. **摄像头选型统一走 `CONFIG.camera_device`**（2026-10-23 第一套演示的第二个真凶）：网页/演示台的
+   `app.state.resolve_camera()` 以前**只读** `camera_num`（数字索引，会重排），`camera_device`
+   只有 PyQt GUI 认——于是"配置写 `vid_0c45`（外接）、演示台实际打开 index 1（笔记本内置）"，
+   画面正常所以一直没被发现。现在三处入口统一用 `tool/camera_source.spec_from_config()`：
+   标识优先、数字索引兜底。另外：**按标识选中的相机打不开时只在这台上换 FOURCC 重试，
+   绝不扫其它索引**（旧行为会一路扫到 index=1，把内置相机静默打开），失败信息直接说
+   "可能被浏览器实时监测 / 微信 / 评分 GUI 占用"。开相机耗时也从 ~60s 降到 ~10s。
+   **另一个坑：外接相机冷启动要 7.4 秒才出图**（`tool/camera_check.py` 2026-10-24 实测），
+   而 `CAMERA.probe_timeout` 原来是 8s，正好卡边界 → 被误报成"打不开/被占用"。现已：
+   ① 配置升到 `probe_timeout: 12.0`；② 按标识重试时先给 12s 等首帧；③ 错误文案区分
+   「打不开」（被占用/USB/驱动）与「能打开但没出画面」（带宽/曝光预热/超时太小，指向 probe_timeout）；
+   ④ `/api/camera/restart` 也按 probe_timeout 等首帧（原来只等 3s，慢相机会误报重启失败）。
+   ⚠️ 排查时先确认服务不是跑在受限环境里（如沙箱进程访问不了相机设备）。
 
 ## 测试
-- `py -3.14 tests/run_tests.py`：244 passed / 0 failed（2026-10-23 品牌/EdgeJev 部署后，含真模型冒烟）
+- `py -3.14 tests/run_tests.py`：270 passed / 0 failed（2026-10-24 网站一体化改造后，含真模型冒烟）
 - `py -3.14 scripts/ask_eval.py`：库内召回 20/20、库外拒答 10/10、越权拦截 4/4
 - `py -3.14 scripts/ask_eval.py --llm` 才真调 Ollama

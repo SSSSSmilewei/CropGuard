@@ -1,0 +1,130 @@
+/*
+ * 株得 · 设计令牌（单一事实来源）
+ * 这里只放颜色/字体/圆角/阴影等变量：站点（Vue）与原生页（/m-classic /demo /eval-classic）共用同一套，
+ * 保证"评分台、实时监测、手机端、指挥台"看起来是同一个产品。
+ * 改完必须执行：py -3.14 scripts/sync_tokens.py（生成 serve/static/tokens.css）
+ */
+/*
+ * 株得 · 视觉基调
+ * 布局：植保站"标本台"——浅灰绿底板如同标本衬板，检测结果以标本签呈现；
+ *       数字用窄体（仪表读数感），数据用等宽体，中文用系统黑体（离线、不打包中文字体）。
+ * 主色：田野深绿（操作）；稻穗金（检测框、选中）。风险色是语义色，不当主色用。
+ */
+:root {
+  --ground: #ECEEE8;
+  --panel: #F9FAF6;
+  --paper: #FFFFFF;
+  --inset: #E2E6DC;
+  --grid: #D6DBD0;
+  --line: #D2D7CD;
+  --line-strong: #C3C9BE;
+  --ink: #16201A;
+  --ink-2: #4A5850;
+  --ink-3: #626E66;
+  --body-ink: #2E3A33;
+  --brand: #234F38;
+  --brand-hover: #1A3D2B;
+  --brand-ink: #F9FAF6;
+  --brand-soft: #E4ECE4;
+  --signal: #D9A441;
+  --signal-ink: #A87418;
+  --risk-high: #A8321F;
+  --risk-mid: #B25A0C;
+  --risk-low: #5F7327;
+  --risk-none: #8C978F;
+  --warn-bg: #FBF1E6;
+  --warn-line: #E7C9A6;
+  --warn-ink: #8A4308;
+  --danger-bg: #FBEAE7;
+  --stage: #0F1411;
+  --stage-ink: #F2F4EF;
+  --overlay: rgba(15, 20, 17, 0.72);
+  --shadow-lift: 0 1px 0 var(--line-strong), 0 12px 28px rgba(22, 32, 26, 0.16);
+  /* 图表系列色（dataviz 校验通过：相邻色盲 ΔE≥9、正常视觉 ΔE≥22；浅色下 s2/s4 对比度<3:1，图上一律配直接标签） */
+  --s1: #2a78d6;
+  --s2: #1baf7a;
+  --s3: #4a3aa7;
+  --s4: #eda100;
+
+  --font-cn: "CG Sarasa", "Sarasa Gothic SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-serif: "CG Serif", "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --font-num: "CG Smiley", "Smiley Sans", var(--font-cn);
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  --r-sm: 3px;
+  --r: 4px;
+  --r-lg: 6px;
+  --header-h: 64px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0F1310;
+    --panel: #161B17;
+    --paper: #1B211C;
+    --inset: #1E2520;
+    --grid: #252D27;
+    --line: #2A332D;
+    --line-strong: #3A453E;
+    --ink: #E4E9E2;
+    --ink-2: #AEB8B0;
+    --ink-3: #8F9A92;
+    --body-ink: #CDD5CE;
+    --brand: #3E7A56;
+    --brand-hover: #4A8B64;
+    --brand-ink: #F4F7F2;
+    --brand-soft: #1F3327;
+    --signal: #D9A441;
+    --signal-ink: #E0B354;
+    --risk-high: #E5705E;
+    --risk-mid: #E39A4E;
+    --risk-low: #A3BC5C;
+    --risk-none: #6E7A72;
+    --warn-bg: #2B2016;
+    --warn-line: #5C4024;
+    --warn-ink: #F0B87A;
+    --danger-bg: #331A16;
+    --stage: #090C0A;
+    --shadow-lift: 0 1px 0 #000, 0 12px 28px rgba(0, 0, 0, 0.45);
+    --s1: #3987e5;
+    --s2: #199e70;
+    --s3: #9085e9;
+    --s4: #c98500;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0F1310;
+  --panel: #161B17;
+  --paper: #1B211C;
+  --inset: #1E2520;
+  --grid: #252D27;
+  --line: #2A332D;
+  --line-strong: #3A453E;
+  --ink: #E4E9E2;
+  --ink-2: #AEB8B0;
+  --ink-3: #8F9A92;
+  --body-ink: #CDD5CE;
+  --brand: #3E7A56;
+  --brand-hover: #4A8B64;
+  --brand-ink: #F4F7F2;
+  --brand-soft: #1F3327;
+  --signal: #D9A441;
+  --signal-ink: #E0B354;
+  --risk-high: #E5705E;
+  --risk-mid: #E39A4E;
+  --risk-low: #A3BC5C;
+  --risk-none: #6E7A72;
+  --warn-bg: #2B2016;
+  --warn-line: #5C4024;
+  --warn-ink: #F0B87A;
+  --danger-bg: #331A16;
+  --stage: #090C0A;
+  --shadow-lift: 0 1px 0 #000, 0 12px 28px rgba(0, 0, 0, 0.45);
+  --s1: #3987e5;
+  --s2: #199e70;
+  --s3: #9085e9;
+  --s4: #c98500;
+  color-scheme: dark;
+}

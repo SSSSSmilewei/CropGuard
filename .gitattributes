@@ -1,0 +1,7 @@
+# Windows 批处理必须是 CRLF 换行。
+# 实测（2026-10-23）：UTF-8 中文 .bat 用纯 LF 保存时，cmd 解析会错位——
+# `echo`/`REM` 前缀被吃掉，残句被当成命令执行（'xxx' 不是内部或外部命令），
+# 启动流程根本走不到 `start "" http://...`，屏幕上只闪一个窗口就退出。
+# 现场机器多为「拷过去/解压」的目录，不受 core.autocrlf 影响，所以写死在这里。
+*.bat  text eol=crlf
+*.cmd  text eol=crlf

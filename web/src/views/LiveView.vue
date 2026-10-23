@@ -1,28 +1,19 @@
 <script setup lang="ts">
-// 实时监测：服务器相机（共享采集源）→ /ws/stream 推帧 + 检测结果；框由前端叠加。
-// 右侧：当前片区风险、手动喷淋（按住确认）、联动记录。底部：近 60 秒风险时间线。
+// 实时监测（自动喷洒业务）：服务器相机 → /ws/stream 推帧 + 检测；框由前端叠加。
+// 右侧：当前片区风险、自动喷洒总闸、手动喷淋（按住确认）、联动记录。底部：近 60 秒风险时间线。
+//
+// 自动喷洒后端逻辑在 app/inference.py 的推理泵里（高/中风险 → _linkage → 下发），
+// 受 /api/demo/auto_spray 这个总闸控制；本页只负责"看得见 + 能开关"。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { api, wsUrl, type CameraState, type Detection, type Risk } from '../lib/api'
-import { RISK_ORDER, latinName, riskKey, sortByConf, type RiskKey } from '../lib/format'
+import { api } from '../lib/api'
+import { RISK_ORDER, latinName, riskKey, type RiskKey } from '../lib/format'
 import { toast, useStation } from '../composables/station'
+import { useLiveStream } from '../composables/liveStream'
 import DetectionStage from '../components/DetectionStage.vue'
 import HistoryList from '../components/HistoryList.vue'
 import Icon from '../components/Icon.vue'
 import SprayControl from '../components/SprayControl.vue'
-
-interface StreamMsg {
-  success?: boolean
-  error?: string
-  warning?: string
-  detections?: Detection[]
-  risk?: Risk
-  result_image?: string
-  image_size?: [number, number]
-  zone?: string
-  camera?: CameraState
-  result_age?: number | null
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -32,84 +23,6 @@ const zones = computed(() => state.spray?.zones || [])
 const zone = ref<string>(String(route.query.cam || ''))
 const zoneGroup = computed(() => zones.value.find((z) => String(z.id) === zone.value)?.group || null)
 watch(zones, (zs) => { if (!zone.value && zs.length) zone.value = String(zs[0].id) }, { immediate: true })
-
-const conn = ref<'wait' | 'on' | 'off' | 'error'>('wait')
-const frame = ref<string | null>(null)
-const size = ref<[number, number]>([1280, 720])
-const dets = ref<Detection[]>([])
-const risk = ref<Risk | null>(null)
-const cam = ref<CameraState | null>(null)
-const age = ref<number | null>(null)
-const errorMsg = ref('')
-const warnMsg = ref('')
-const restarting = ref(false)
-const activeDet = ref<number | null>(null)
-
-let ws: WebSocket | null = null
-let gen = 0
-let retryT = 0
-let objUrl: string | null = null
-
-function b64ToUrl(b64: string) {
-  const bin = atob(b64)
-  const buf = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i)
-  if (objUrl) URL.revokeObjectURL(objUrl)
-  objUrl = URL.createObjectURL(new Blob([buf], { type: 'image/jpeg' }))
-  return objUrl
-}
-
-function connect() {
-  gen += 1
-  const my = gen
-  window.clearTimeout(retryT)
-  if (ws) { ws.onclose = null; try { ws.close() } catch { /* 已关闭 */ } }
-  conn.value = 'wait'
-  errorMsg.value = ''
-  ws = new WebSocket(wsUrl('/ws/stream' + (zone.value ? `?cam=${encodeURIComponent(zone.value)}` : '')))
-  ws.onopen = () => { if (my === gen) conn.value = 'on' }
-  ws.onmessage = (ev) => {
-    if (my !== gen) return
-    let d: StreamMsg
-    try { d = JSON.parse(ev.data) } catch { return }
-    onMsg(d)
-  }
-  ws.onclose = () => {
-    if (my !== gen) return
-    if (conn.value !== 'error') conn.value = 'off'
-    retryT = window.setTimeout(connect, errorMsg.value ? 5000 : 2000)
-  }
-  ws.onerror = () => { try { ws?.close() } catch { /* 忽略 */ } }
-}
-
-function onMsg(d: StreamMsg) {
-  if (d.error) {
-    errorMsg.value = d.error
-    cam.value = d.camera || cam.value
-    conn.value = 'error'
-    frame.value = null
-    return
-  }
-  if (d.warning) {
-    warnMsg.value = d.warning + (d.camera?.last_error ? `（${d.camera.last_error}）` : '')
-    cam.value = d.camera || cam.value
-    return
-  }
-  warnMsg.value = ''
-  errorMsg.value = ''
-  conn.value = 'on'
-  if (d.result_image) frame.value = b64ToUrl(d.result_image)
-  if (d.image_size) size.value = d.image_size
-  else if (d.camera?.size) {
-    const [w, h] = d.camera.size.split('x').map(Number)
-    if (w && h) size.value = [w, h]
-  }
-  dets.value = sortByConf(d.detections || [])
-  risk.value = d.risk || null
-  cam.value = d.camera || null
-  age.value = d.result_age ?? null
-  if (d.detections) bucketRisk = maxRisk(bucketRisk, riskKey(d.risk?.level))
-}
 
 /* ---------------- 近 60 秒风险时间线（每秒取该秒内最高风险） ---------------- */
 const RANK: Record<RiskKey, number> = { none: 0, low: 1, mid: 2, high: 3 }
@@ -125,11 +38,22 @@ function tickTimeline() {
 }
 const hhmmss = (d: Date) => d.toLocaleTimeString('zh-CN', { hour12: false })
 
+/* ---------------- 画面：与检测台的「摄像头」输入共用同一个 WS 实现 ---------------- */
+const { conn, frameUrl: frame, size, dets, risk, cam, age, errorMsg, warnMsg, connect } = useLiveStream({
+  zone,
+  autoConnect: false,
+  onResult: (d) => {
+    if (d.detections) bucketRisk = maxRisk(bucketRisk, riskKey(d.risk?.level))
+  },
+})
+
 watch(zone, (z) => {
   router.replace({ query: z ? { cam: z } : {} })
   timeline.value = Array(60).fill(null)
-  connect()
 })
+
+const restarting = ref(false)
+const activeDet = ref<number | null>(null)
 
 async function restart() {
   restarting.value = true
@@ -144,29 +68,38 @@ async function restart() {
   }
 }
 
-function onVisibility() {
-  if (document.hidden) {
-    gen += 1
-    window.clearTimeout(retryT)
-    if (ws) { ws.onclose = null; ws.close(); ws = null }
-    conn.value = 'off'
-  } else {
-    connect()
+/* ---------------- 自动喷洒总闸（与 /demo 指挥台共用同一个后端开关） ---------------- */
+const auto = ref(true)
+const autoLoaded = ref(false)
+const autoBusy = ref(false)
+async function loadAuto() {
+  try {
+    const st = await api.demoStatus()
+    auto.value = !!st.spray?.auto
+    autoLoaded.value = true
+  } catch { /* 读不到就按默认显示，不挡演示 */ }
+}
+async function toggleAuto() {
+  if (autoBusy.value) return
+  autoBusy.value = true
+  const next = !auto.value
+  try {
+    const r = await api.autoSpray(next)
+    auto.value = !!r.auto_spray
+    toast(next ? '自动喷洒已开启：检出高/中风险会直接下发' : '自动喷洒已关闭：只播语音，不喷')
+  } catch (e) {
+    toast(`切换失败：${(e as Error).message}`, 'bad')
+  } finally {
+    autoBusy.value = false
   }
 }
+
 onMounted(() => {
   if (!zones.value.length || zone.value) connect()
   tlTimer = window.setInterval(tickTimeline, 1000)
-  document.addEventListener('visibilitychange', onVisibility)
+  loadAuto()
 })
-onBeforeUnmount(() => {
-  gen += 1
-  window.clearTimeout(retryT)
-  window.clearInterval(tlTimer)
-  if (ws) { ws.onclose = null; ws.close() }
-  if (objUrl) URL.revokeObjectURL(objUrl)
-  document.removeEventListener('visibilitychange', onVisibility)
-})
+onBeforeUnmount(() => window.clearInterval(tlTimer))
 
 const camLabel = computed(() => {
   const c = cam.value
@@ -216,7 +149,7 @@ const connText = computed(() => ({ wait: '正在打开相机…', on: '已连接
             <p class="ve-s">检查相机是否插好、是否被桌面 GUI 占用；也可以运行 <span class="mono">python tool/camera_probe.py</span> 重新认索引。</p>
             <button type="button" class="btn" :disabled="restarting" @click="restart"><Icon name="refresh" :size="16" />{{ restarting ? '正在重启…' : '重启相机' }}</button>
           </template>
-          <p v-else class="ve-t">正在打开相机（冷启动最长约 8 秒）…</p>
+          <p v-else class="ve-t">正在打开相机（外接 USB 冷启动最长约 15 秒）…</p>
         </div>
         <div v-if="frame" class="hud mono">
           <span class="hc"><span class="live" />LIVE {{ zoneName }}</span>
@@ -265,6 +198,19 @@ const connText = computed(() => ({ wait: '正在打开相机…', on: '已连接
           </div>
         </div>
         <p v-else class="empty">画面里没有检出害虫。高、中风险会自动按预案喷淋并语音播报。</p>
+      </div>
+
+      <div class="panel panel-pad">
+        <div class="panel-head">
+          <h2>自动喷洒</h2>
+          <span class="muted small">{{ auto ? '检出高/中风险会自动下发' : '只播语音，不执行' }}</span>
+        </div>
+        <button type="button" class="auto-toggle" :class="{ on: auto }" :disabled="autoBusy" @click="toggleAuto">
+          <span class="auto-dot" />
+          <span class="auto-t">{{ auto ? '已开启' : '已关闭' }}</span>
+          <span class="auto-s">点击{{ auto ? '关闭' : '开启' }}</span>
+        </button>
+        <p class="auto-hint">手动喷淋不受这个开关影响；演示指挥台改的是同一个总闸。</p>
       </div>
 
       <div class="panel panel-pad">
@@ -327,6 +273,20 @@ const connText = computed(() => ({ wait: '正在打开相机…', on: '已连接
 .det-list { display: flex; flex-direction: column; }
 .det { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
 .det.on { color: var(--signal-ink); }
+/* 自动喷洒总闸：一个能一眼看出开/关的整行按钮（现场戴手套也点得中） */
+.auto-toggle {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: var(--r);
+  background: var(--paper); color: var(--ink-2); cursor: pointer; text-align: left;
+}
+.auto-toggle:hover { border-color: var(--brand); }
+.auto-toggle:disabled { opacity: .6; cursor: default; }
+.auto-toggle.on { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+.auto-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.auto-toggle.on .auto-dot { background: var(--brand); }
+.auto-t { font-family: var(--font-serif); font-weight: 700; font-size: 16px; }
+.auto-s { margin-left: auto; font-size: 12px; }
+.auto-hint { margin-top: 8px; font-size: 12px; color: var(--ink-3); line-height: 1.6; }
 @media (max-width: 640px) {
   .page { padding: 16px; gap: 16px; }
   .cam-meta { margin-left: 0; width: 100%; }

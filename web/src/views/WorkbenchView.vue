@@ -1,74 +1,118 @@
 <script setup lang="ts">
-// 检测台：一次可以放进多张样本，按顺序识别并计时（对应现场"20 张 / 180 秒"评测）。
-// 原图 + 前端叠框；右侧是风险判定、标本签、防治建议（知识库秒出，本地大模型生成后替换）。
+// 检测台：一条样本 = 一次采集（拍照 / 图片 / 文件夹 / 视频抓帧 / 服务器样本）。
+//
+// 两种模式：
+//   * 评分作业（/eval 或 ?mode=eval）= GUI 的现场流程：标本摆好 → 摄像头实时画面里拍一张
+//     → 识别 → 评委判对错 → 满 20 张停表 → 导出 CSV。计时从第一张"拍下那一刻"开始。
+//   * 自由检测（/）= 上传/拖拽/粘贴/文件夹/视频，随便识别，不判分。
+//
+// 与 GUI 同一套规则（main.py _record_detection）：
+//   · 只有"采集"（拍照/图片/文件夹/显式抓帧）算样本；实时画面与视频连续帧不算；
+//   · **没检出目标不写行**（这里保留缩略图但标记"不计分"，不影响得分）；
+//   · 一次采集 = 一条，不做同目标合并；满 20 自动停表。
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { api, type DetectResult } from '../lib/api'
+import { useRoute, useRouter } from 'vue-router'
+import { api, type DetectResult, type EvalRubric, type EvalScore, type LanInfo } from '../lib/api'
 import { areaRatio, clock, groupLabel, riskKey, sortByConf, timeOf } from '../lib/format'
 import { setChatContext } from '../composables/chat'
 import { toast, useStation } from '../composables/station'
 import AdviceBody from '../components/AdviceBody.vue'
+import CameraCapture from '../components/CameraCapture.vue'
 import DetectionStage from '../components/DetectionStage.vue'
+import EvalPanel from '../components/EvalPanel.vue'
 import HoldButton from '../components/HoldButton.vue'
 import Icon from '../components/Icon.vue'
 import RiskMeter from '../components/RiskMeter.vue'
 import SpecimenCard from '../components/SpecimenCard.vue'
 
+type InputMode = 'camera' | 'image' | 'folder' | 'video' | 'phone'
+
 interface Sample {
   id: number
   no: string
   name: string
-  file: File
   url: string
   w: number
   h: number
   status: 'queued' | 'running' | 'done' | 'error'
   result?: DetectResult
   error?: string
-  advice?: string
-  adviceSource?: string
-  adviceState: 'idle' | 'loading' | 'done'
+  verdict: '正确' | '错误' | null
+  /** 有检出目标才算一条评分样本（GUI 规则：没检出目标不写行） */
+  counts: boolean
+  /** 距本轮计时起点的秒数（拍照模式按"按下快门那一刻"算） */
+  elapsed: number | null
+  source: InputMode | 'server'
+  snapshotUrl?: string | null
+  tAt?: number
 }
 
-const { state, zoneOf, refreshHistory } = useStation()
+const INPUTS: { id: InputMode; label: string; icon: string }[] = [
+  { id: 'camera', label: '摄像头', icon: 'camera' },
+  { id: 'image', label: '图片', icon: 'image' },
+  { id: 'folder', label: '文件夹', icon: 'folder' },
+  { id: 'video', label: '视频', icon: 'live' },
+  { id: 'phone', label: '手机', icon: 'qr' },
+]
 
+const route = useRoute()
+const router = useRouter()
+const { state, zoneOf, refreshHistory } = useStation()
+const lan = ref<LanInfo | null>(null)
+
+/* ==================== 样本与计时（先声明，后面到处用） ==================== */
 const samples = ref<Sample[]>([])
 const currentId = ref<number | null>(null)
 const activeDet = ref<number | null>(null)
-const conf = ref(0.4)
-const dragging = ref(false)
-const fileInput = ref<HTMLInputElement | null>(null)
+const busy = ref(false)
 let seq = 0
+const pending: { s: Sample; blob: Blob }[] = []
 
+const counts = computed(() => samples.value.filter((s) => s.counts))
+const doneCount = computed(() => counts.value.length)
+
+const session = reactive({ start: 0, stop: 0, now: 0 })
+let ticker = 0
+const started = computed(() => session.start > 0)
+const running = computed(() => started.value && !session.stop)
+const elapsedSec = computed(() => {
+  if (!session.start) return 0
+  const end = session.stop || session.now || session.start
+  return Math.max(0, (end - session.start) / 1000)
+})
+const elapsed = computed(() => elapsedSec.value)
+
+/* ==================== 模式 / 输入方式 ==================== */
+const mode = computed<'eval' | 'free'>(() =>
+  (route.meta.mode === 'eval' || route.query.mode === 'eval') ? 'eval' : 'free')
+const input = ref<InputMode>('image')
+const reviewId = ref<number | null>(null)
+
+const reviewSample = computed(() => samples.value.find((s) => s.id === reviewId.value) || null)
+const current = computed(() => samples.value.find((s) => s.id === currentId.value) || null)
+const stageSample = computed(() => {
+  if (input.value === 'camera' || input.value === 'video') return reviewSample.value || null
+  return current.value
+})
+
+function switchMode(next: 'eval' | 'free') {
+  if (next === mode.value) return
+  if (samples.value.length && !window.confirm('切换模式会清空本轮样本，继续？')) return
+  resetSession()
+  void router.replace(next === 'eval' ? '/eval' : '/')
+}
+watch(mode, (m) => {
+  input.value = m === 'eval' ? 'camera' : 'image'
+  reviewId.value = null
+}, { immediate: true })
+watch(input, () => { reviewId.value = null })
+
+const conf = ref(0.4)
+watch(() => state.config?.conf_default, (v) => { if (v) conf.value = v }, { immediate: true })
 const target = computed(() => state.config?.eval_target || 20)
 const limit = computed(() => state.config?.eval_time_limit || 180)
-watch(() => state.config?.conf_default, (v) => { if (v) conf.value = v }, { immediate: true })
 
-const current = computed(() => samples.value.find((s) => s.id === currentId.value) || null)
-const dets = computed(() => sortByConf(current.value?.result?.detections || []))
-const top = computed(() => dets.value[activeDet.value ?? 0] || dets.value[0] || null)
-const risk = computed(() => current.value?.result?.risk || null)
-const area = computed(() => (current.value ? areaRatio(dets.value, current.value.w, current.value.h) : 0))
-const plan = computed(() => {
-  const m = state.config?.risk_map?.[risk.value?.level || '']
-  return m && m.group && m.duration > 0 ? m : null
-})
-
-/* ---------------- 计时：从第一张开始识别算起，到最后一张出结果为止 ---------------- */
-const session = reactive({ start: 0, last: 0, now: 0 })
-let ticker = 0
-const running = computed(() => samples.value.some((s) => s.status === 'running' || s.status === 'queued'))
-const elapsed = computed(() => (session.start ? ((running.value ? session.now : session.last) - session.start) / 1000 : 0))
-const doneCount = computed(() => samples.value.filter((s) => s.status === 'done').length)
-const avg = computed(() => {
-  const d = samples.value.filter((s) => s.result)
-  return d.length ? d.reduce((a, s) => a + (s.result!.inference_time || 0), 0) / d.length : 0
-})
-watch(running, (r) => {
-  window.clearInterval(ticker)
-  if (r) ticker = window.setInterval(() => { session.now = performance.now() }, 200)
-})
-
-/* ---------------- 选图 ---------------- */
+/* ==================== 采集 → 识别队列 ==================== */
 function readSize(url: string) {
   return new Promise<{ w: number; h: number }>((resolve) => {
     const img = new Image()
@@ -77,100 +121,316 @@ function readSize(url: string) {
     img.src = url
   })
 }
-async function addFiles(files: FileList | File[] | null | undefined) {
-  const list = Array.from(files || []).filter((f) => f.type.startsWith('image/'))
-  if (!list.length) { toast('请选择图片文件（JPG / PNG）', 'bad'); return }
-  for (const f of list) {
-    const url = URL.createObjectURL(f)
-    const { w, h } = await readSize(url)
-    seq += 1
-    samples.value.push({
-      id: seq, no: String(seq).padStart(2, '0'), name: f.name || `粘贴的图片 ${seq}`, file: f, url, w, h,
-      status: 'queued', adviceState: 'idle',
-    })
-    if (currentId.value == null || list.length === 1) currentId.value = seq
+
+async function capture(blob: Blob, name: string, source: Sample['source'], wh?: { w: number; h: number }) {
+  if (!session.start) { session.start = performance.now(); session.now = session.start }
+  const url = URL.createObjectURL(blob)
+  const size = wh || await readSize(url)
+  seq += 1
+  const s: Sample = {
+    id: seq, no: String(seq).padStart(2, '0'), name,
+    url, w: size.w, h: size.h, status: 'queued',
+    verdict: null, counts: false, elapsed: null, source,
+    tAt: performance.now(),
   }
-  pump()
-}
-function onPick(e: Event) {
-  const input = e.target as HTMLInputElement
-  addFiles(input.files)
-  input.value = ''
-}
-function onDrop(e: DragEvent) {
-  dragging.value = false
-  addFiles(e.dataTransfer?.files)
-}
-function onPaste(e: ClipboardEvent) {
-  const files = Array.from(e.clipboardData?.items || [])
-    .filter((i) => i.type.startsWith('image/'))
-    .map((i) => i.getAsFile())
-    .filter((f): f is File => !!f)
-  if (files.length) addFiles(files)
+  samples.value.push(s)
+  if (currentId.value == null) currentId.value = s.id
+  pending.push({ s, blob })
+  void pump()
 }
 
-/* ---------------- 识别队列（串行，计时才准） ---------------- */
 let pumping = false
 async function pump() {
   if (pumping) return
   pumping = true
+  busy.value = true
   try {
     for (;;) {
-      const s = samples.value.find((x) => x.status === 'queued')
-      if (!s) break
-      if (!session.start) { session.start = performance.now(); session.now = session.start }
+      const item = pending.shift()
+      if (!item) break
+      const { s } = item
       s.status = 'running'
       try {
-        const r = await api.detect(s.file, conf.value, s.name)
+        const r = await api.detect(item.blob, conf.value, s.name)
         if (!r.success) throw new Error(r.error || '识别失败')
         s.result = r
-        s.advice = r.advice
-        s.adviceSource = r.advice_source
         s.status = 'done'
-        if (r.detections.length) setChatContext(r.detections, r.risk)
+        s.counts = r.detections.length > 0
+        // 计时：拍照按"按下那一刻"算（GUI 同口径）；图片/文件夹按完成时刻
+        s.elapsed = Math.max(0, (((s.tAt ?? performance.now()) - session.start) / 1000))
+        if (s.counts) {
+          void saveSnapshot(s)
+          if (s.id === currentId.value && !reviewId.value) void loadAdvice(s)
+          if (r.detections.length) setChatContext(r.detections, r.risk)
+        } else {
+          toast(`样本 ${s.no} 没有检出目标，不计入评分（可调低阈值后重拍）`, 'warn')
+        }
+        if (mode.value === 'eval' && doneCount.value >= target.value) finish()
       } catch (e) {
         s.status = 'error'
         s.error = (e as Error).message
         toast(`样本 ${s.no} 识别失败：${s.error}`, 'bad')
       }
-      session.last = performance.now()
-      if (s.id === currentId.value) loadAdvice(s)
     }
   } finally {
     pumping = false
+    busy.value = false
   }
 }
+
 async function loadAdvice(s: Sample) {
-  if (!s.result?.detections.length || s.adviceState !== 'idle') return
-  s.adviceState = 'loading'
+  if (!s.result?.detections.length) return
   try {
     const a = await api.advice(s.result.detections, s.result.risk)
-    // 只有大模型真的生成了才替换：大模型不可用时网关返回的是检索片段原文，
-    // 不如检测接口已经给出的结构化知识库方案好读
-    if (a.advice && a.source === 'llm') { s.advice = a.advice; s.adviceSource = a.source }
+    if (a.advice && a.source === 'llm') {
+      s.result.advice = a.advice
+      s.result.advice_source = a.source
+    }
   } catch { /* 大模型不可用：保留知识库版 */ }
-  s.adviceState = 'done'
 }
-watch(currentId, () => {
-  activeDet.value = null
-  if (current.value?.status === 'done') loadAdvice(current.value)
-})
 
-function redetect() {
-  const s = current.value
-  if (!s) return
-  s.status = 'queued'
-  s.result = undefined
-  s.adviceState = 'idle'
-  pump()
+/** 拍照即存：带框截图落 output/snapshots/（与 GUI 同目录），失败不影响评分 */
+async function saveSnapshot(s: Sample) {
+  const img = s.result?.result_image
+  if (!img) return
+  try {
+    const r = await api.saveSnapshot(`data:image/jpeg;base64,${img}`)
+    if (r.success && r.url) s.snapshotUrl = r.url
+  } catch { /* 忽略 */ }
 }
+
+async function redetect() {
+  const s = stageSample.value
+  if (!s) return
+  try {
+    const blob = await (await fetch(s.url)).blob()
+    s.status = 'running'
+    const r = await api.detect(blob, conf.value, s.name)
+    s.result = r
+    s.status = 'done'
+    s.counts = r.detections.length > 0
+    s.elapsed = Math.max(0, (((s.tAt ?? performance.now()) - session.start) / 1000))
+    if (s.counts) void saveSnapshot(s)
+    scheduleScore()
+    toast(s.counts ? '重新识别完成' : '这个阈值下没有检出目标', s.counts ? 'ok' : 'warn')
+  } catch (e) {
+    s.status = 'error'
+    s.error = (e as Error).message
+    toast(`重新识别失败：${s.error}`, 'bad')
+  }
+}
+
+function finish() {
+  if (!session.start || session.stop) return
+  session.stop = performance.now()
+  session.now = session.stop
+  toast(`本轮结束：${doneCount.value} 张样本 · ${clock(elapsedSec.value)}`, 'ok')
+  void refreshScore()
+}
+
 function resetSession() {
   samples.value.forEach((s) => URL.revokeObjectURL(s.url))
   samples.value = []
+  pending.length = 0
   currentId.value = null
-  session.start = session.last = session.now = 0
+  reviewId.value = null
+  activeDet.value = null
   seq = 0
+  session.start = session.stop = session.now = 0
+  score.value = null
 }
+
+/* ==================== 评分（服务端口径，不自己算） ==================== */
+const score = ref<EvalScore | null>(null)
+const rubric = ref<Partial<EvalRubric> | null>(null)
+let scoreTimer = 0
+
+async function refreshScore() {
+  if (mode.value !== 'eval' || !doneCount.value) { score.value = null; return }
+  try {
+    const r = await api.evalScore(counts.value.map((s) => ({ verdict: s.verdict })), elapsedSec.value)
+    score.value = r.score
+    rubric.value = r.rubric
+  } catch { /* 离线/异常：保留上一次分数 */ }
+}
+function scheduleScore() {
+  window.clearTimeout(scoreTimer)
+  scoreTimer = window.setTimeout(refreshScore, 250)
+}
+watch(doneCount, scheduleScore)
+watch(() => counts.value.map((s) => s.verdict).join(','), scheduleScore)
+
+function setVerdict(v: '正确' | '错误') {
+  const s = stageSample.value
+  if (!s || !s.counts) { toast('先选一条有检出的样本，再判对错', 'warn'); return }
+  s.verdict = s.verdict === v ? null : v
+  scheduleScore()
+}
+
+async function exportReport() {
+  const recs = counts.value.map((s) => ({
+    no: s.no,
+    name: s.name,
+    time: timeOf(s.result?.timestamp),
+    detections: (s.result?.detections || []).map((d) => ({ chinese_name: d.chinese_name, confidence: d.confidence })),
+    consum: s.result?.inference_time ?? 0,
+    elapsed: s.elapsed ?? 0,
+    verdict: s.verdict,
+  }))
+  if (!recs.length) { toast('还没有可导出的样本', 'warn'); return }
+  try {
+    const r = await api.evalReport(recs, elapsedSec.value)
+    const a = document.createElement('a')
+    a.href = r.url
+    a.download = r.name
+    a.click()
+    toast(`报告已导出：${r.name}`, 'ok')
+  } catch (e) {
+    toast(`导出失败：${(e as Error).message}`, 'bad')
+  }
+}
+
+/* ==================== 图片 / 文件夹 / 粘贴 / 拖拽 ==================== */
+const fileInput = ref<HTMLInputElement | null>(null)
+const dirInput = ref<HTMLInputElement | null>(null)
+const dragging = ref(false)
+
+async function addFiles(files: FileList | File[] | null | undefined, source: 'image' | 'folder') {
+  const list = Array.from(files || []).filter((f) => f.type.startsWith('image/'))
+  if (!list.length) { toast('请选择图片文件（JPG / PNG）', 'bad'); return }
+  for (const f of list) await capture(f, f.name || `样本 ${seq + 1}`, source)
+}
+function onPick(e: Event) {
+  const el = e.target as HTMLInputElement
+  void addFiles(el.files, 'image')
+  el.value = ''
+}
+function onPickDir(e: Event) {
+  const el = e.target as HTMLInputElement
+  void addFiles(el.files, 'folder')
+  el.value = ''
+}
+function onDrop(e: DragEvent) {
+  dragging.value = false
+  if (input.value !== 'image' && input.value !== 'folder') return
+  void addFiles(e.dataTransfer?.files, 'image')
+}
+function onPaste(e: ClipboardEvent) {
+  if (input.value !== 'image' && input.value !== 'folder') return
+  const files = Array.from(e.clipboardData?.items || [])
+    .filter((i) => i.type.startsWith('image/'))
+    .map((i) => i.getAsFile())
+    .filter((f): f is File => !!f)
+  if (files.length) void addFiles(files, 'image')
+}
+
+/* ==================== 摄像头 ==================== */
+function onCameraCapture(p: { blob: Blob; w: number; h: number }) {
+  if (mode.value === 'eval' && doneCount.value >= target.value) {
+    toast(`已满 ${target.value} 张：点「结束本轮」导出，或「新一轮」重来`, 'warn')
+    return
+  }
+  const n = doneCount.value + 1
+  void capture(p.blob, `拍照 ${String(n).padStart(2, '0')}`, 'camera', { w: p.w, h: p.h })
+}
+
+/* ==================== 视频（连续识别不记样本，抓帧才记） ==================== */
+const videoEl = ref<HTMLVideoElement | null>(null)
+const videoFile = ref<HTMLInputElement | null>(null)
+const videoUrl = ref('')
+const videoName = ref('')
+const videoMsg = ref('')
+const videoLive = ref(false)
+let videoTimer = 0
+
+function onVideoPick(e: Event) {
+  const el = e.target as HTMLInputElement
+  const f = el.files?.[0]
+  el.value = ''
+  if (!f) return
+  if (videoUrl.value) URL.revokeObjectURL(videoUrl.value)
+  videoUrl.value = URL.createObjectURL(f)
+  videoName.value = f.name
+  videoMsg.value = ''
+}
+
+function grabVideoFrame(): Promise<Blob | null> {
+  const v = videoEl.value
+  if (!v || !v.videoWidth) return Promise.resolve(null)
+  const cv = document.createElement('canvas')
+  cv.width = v.videoWidth
+  cv.height = v.videoHeight
+  cv.getContext('2d')?.drawImage(v, 0, 0)
+  return new Promise((resolve) => cv.toBlob((b) => resolve(b), 'image/jpeg', 0.9))
+}
+
+async function videoCapture(asSample: boolean) {
+  const b = await grabVideoFrame()
+  if (!b) { toast('视频还没出画面', 'warn'); return }
+  const v = videoEl.value
+  const name = `${videoName.value || '视频'}@${v ? v.currentTime.toFixed(1) : '?'}s`
+  if (asSample) {
+    await capture(b, name, 'video', { w: v?.videoWidth || 0, h: v?.videoHeight || 0 })
+    return
+  }
+  // 连续识别：只回报这一帧的结果（不写样本），用来边看边找目标
+  try {
+    const r = await api.detect(b, conf.value, name)
+    videoMsg.value = r.detections.length
+      ? `这一帧：${r.detections.map((d) => `${d.chinese_name} ${(d.confidence * 100).toFixed(0)}%`).join('、')}`
+      : '这一帧没有检出目标'
+  } catch (e) {
+    videoMsg.value = `识别失败：${(e as Error).message}`
+  }
+}
+
+function toggleVideoLive() {
+  videoLive.value = !videoLive.value
+  window.clearInterval(videoTimer)
+  if (videoLive.value) videoTimer = window.setInterval(() => void videoCapture(false), 1200)
+}
+
+/* ==================== 手机 ==================== */
+const phoneUrl = computed(() => {
+  const l = lan.value
+  return l?.phone_urls_https?.[0] || l?.phone_urls?.[0] || ''
+})
+const qrSrc = computed(() => (phoneUrl.value
+  ? `/qr?size=6&url=${encodeURIComponent(phoneUrl.value)}`
+  : '/qr?size=6'))
+
+/* ==================== 从服务器载入 20 张（无相机彩排兜底） ==================== */
+async function loadServerSamples() {
+  try {
+    const r = await api.evalSamples()
+    if (!r.count) { toast(`样本目录是空的：${r.dir}`, 'bad'); return }
+    const names = r.samples.slice(0, target.value).map((s) => s.name)
+    for (const name of names) {
+      const blob = await (await fetch(api.evalSampleUrl(name))).blob()
+      await capture(blob, name, 'server')
+    }
+    toast(`已载入 ${names.length} 张服务器样本`, 'ok')
+  } catch (e) {
+    toast(`载入失败：${(e as Error).message}`, 'bad')
+  }
+}
+
+/* ==================== 右侧结果 ==================== */
+const dets = computed(() => sortByConf(stageSample.value?.result?.detections || []))
+const top = computed(() => dets.value[activeDet.value ?? 0] || dets.value[0] || null)
+const risk = computed(() => stageSample.value?.result?.risk || null)
+const area = computed(() => (stageSample.value ? areaRatio(dets.value, stageSample.value.w, stageSample.value.h) : 0))
+const plan = computed(() => {
+  const m = state.config?.risk_map?.[risk.value?.level || '']
+  return m && m.group && m.duration > 0 ? m : null
+})
+const adviceText = computed(() => stageSample.value?.result?.advice || '')
+const adviceTag = computed(() => {
+  const s = stageSample.value
+  if (!s?.result?.detections.length) return null
+  if (s.result.advice_source === 'llm') return { text: '本地大模型 · 依据知识库', note: '' }
+  return { text: '知识库 · 离线', note: '本地大模型未启动时显示知识库原文' }
+})
 
 async function sprayPlan() {
   if (!plan.value) return
@@ -184,34 +444,68 @@ async function sprayPlan() {
   refreshHistory()
 }
 
-const adviceTag = computed(() => {
-  const s = current.value
-  if (!s?.result?.detections.length) return null
-  if (s.adviceState === 'loading') return { text: '知识库 · 离线', note: '本地大模型生成中…' }
-  if (s.adviceSource === 'llm') return { text: '本地大模型 · 依据知识库', note: '' }
-  return { text: '知识库 · 离线', note: s.adviceState === 'done' ? '本地大模型未启动，显示知识库原文' : '' }
-})
+function viewSample(s: Sample) {
+  if (input.value === 'camera' || input.value === 'video') reviewId.value = s.id
+  else currentId.value = s.id
+}
 
 function onKey(e: KeyboardEvent) {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return
-  const i = samples.value.findIndex((s) => s.id === currentId.value)
+  const i = samples.value.findIndex((s) => s.id === (currentId.value ?? -1))
   if (e.key === 'ArrowRight' && i < samples.value.length - 1) currentId.value = samples.value[i + 1].id
   if (e.key === 'ArrowLeft' && i > 0) currentId.value = samples.value[i - 1].id
+  if (e.key === 'y' || e.key === 'Y') setVerdict('正确')
+  if (e.key === 'n' || e.key === 'N') setVerdict('错误')
 }
-onMounted(() => {
+
+onMounted(async () => {
   document.addEventListener('paste', onPaste)
   document.addEventListener('keydown', onKey)
+  ticker = window.setInterval(() => {
+    if (session.start && !session.stop) { session.now = performance.now() }
+    if (running.value) scheduleScore()
+  }, 500)
+  try { lan.value = await api.lan() } catch { /* 局域网信息读不到不影响检测 */ }
 })
 onBeforeUnmount(() => {
   document.removeEventListener('paste', onPaste)
   document.removeEventListener('keydown', onKey)
   window.clearInterval(ticker)
+  window.clearInterval(videoTimer)
+  window.clearTimeout(scoreTimer)
+  if (videoUrl.value) URL.revokeObjectURL(videoUrl.value)
 })
 </script>
 
 <template>
   <main class="page">
     <section class="main-col">
+      <!-- 模式 + 输入方式 -->
+      <div class="panel modebar">
+        <div class="seg" role="tablist" aria-label="业务模式">
+          <button type="button" class="seg-btn" :class="{ on: mode === 'eval' }" @click="switchMode('eval')">评分作业</button>
+          <button type="button" class="seg-btn" :class="{ on: mode === 'free' }" @click="switchMode('free')">自由检测</button>
+        </div>
+        <div class="seg" role="tablist" aria-label="输入方式">
+          <button
+            v-for="m in INPUTS"
+            :key="m.id"
+            type="button"
+            class="seg-btn"
+            :class="{ on: input === m.id }"
+            :aria-selected="input === m.id"
+            @click="input = m.id"
+          >
+            <Icon :name="m.icon" :size="15" />{{ m.label }}
+          </button>
+        </div>
+        <label class="conf" for="conf">置信度
+          <input id="conf" v-model.number="conf" type="range" min="0.1" max="0.9" step="0.05">
+          <span class="mono">{{ conf.toFixed(2) }}</span>
+        </label>
+      </div>
+
+      <!-- 采集 / 识别舞台 -->
       <div
         class="panel stage-panel"
         :class="{ dragging }"
@@ -219,61 +513,103 @@ onBeforeUnmount(() => {
         @dragleave.self="dragging = false"
         @drop.prevent="onDrop"
       >
-        <div class="toolbar">
-          <div class="title">
-            <span class="num sample-no">{{ current ? `样本 ${current.no}` : '检测台' }}</span>
-            <span class="mono file">{{ current ? `${current.name} · ${current.w} × ${current.h}` : '把样本图片拖进来，或点"选择图片"' }}</span>
+        <CameraCapture
+          v-if="input === 'camera' && !reviewSample"
+          :busy="busy"
+          :count="doneCount"
+          :target="target"
+          @capture="onCameraCapture"
+        />
+
+        <div v-else-if="input === 'video' && !reviewSample" class="video-box">
+          <div class="row">
+            <button type="button" class="btn" @click="videoFile?.click()"><Icon name="folder" :size="16" />选择视频</button>
+            <input ref="videoFile" type="file" accept="video/*" hidden @change="onVideoPick">
+            <span class="mono hint">{{ videoName || '选一个本地视频（MP4 / MOV）' }}</span>
+            <button type="button" class="btn btn-sm" :disabled="!videoUrl" @click="toggleVideoLive">
+              <Icon name="play" :size="14" />{{ videoLive ? '停止连续识别' : '连续识别（不记样本）' }}
+            </button>
+            <button type="button" class="btn btn-sm btn-primary" :disabled="!videoUrl" @click="videoCapture(true)">
+              <Icon name="camera" :size="14" />抓这一帧记样本
+            </button>
           </div>
-          <div class="tools">
-            <label class="conf" for="conf">置信度阈值
-              <input id="conf" v-model.number="conf" type="range" min="0.1" max="0.9" step="0.05">
-              <span class="mono">{{ conf.toFixed(2) }}</span>
-            </label>
-            <button v-if="current && current.status !== 'running'" type="button" class="btn" title="按新阈值重新识别当前样本" @click="redetect">
-              <Icon name="refresh" :size="16" />重新识别
-            </button>
-            <button type="button" class="btn btn-primary" @click="fileInput?.click()">
-              <Icon name="image" :size="16" />选择图片
-            </button>
-            <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPick">
+          <video v-if="videoUrl" ref="videoEl" :src="videoUrl" controls playsinline class="video" />
+          <p v-else class="empty">边播边识别；连续识别只回报结果、不写样本，点「抓这一帧」才记一条。</p>
+          <p v-if="videoMsg" class="mono hint">{{ videoMsg }}</p>
+        </div>
+
+        <div v-else-if="input === 'phone'" class="phone-box">
+          <img class="qr" :src="qrSrc" alt="手机端二维码" width="168" height="168">
+          <div class="phone-info">
+            <p class="phone-t">手机连同一个 WiFi / 热点，扫码打开 <span class="mono">/m</span></p>
+            <p class="mono hint">{{ phoneUrl || '读取局域网地址中…' }}</p>
+            <a class="btn btn-sm" :href="phoneUrl || '/m'" target="_blank" rel="noopener">
+              <Icon name="external" :size="14" />打开手机页
+            </a>
+            <p class="hint">手机端拍的每一张同样进评分（手机页有自己的样本流程）。</p>
           </div>
         </div>
 
         <DetectionStage
+          v-else
           v-model:active="activeDet"
-          :src="current?.url"
-          :width="current?.w"
-          :height="current?.h"
+          :src="stageSample?.url"
+          :width="stageSample?.w"
+          :height="stageSample?.h"
           :detections="dets"
-          :busy="current?.status === 'running' || current?.status === 'queued'"
+          :busy="stageSample?.status === 'running' || stageSample?.status === 'queued'"
           max-height="min(560px, 62vh)"
         >
           <template #empty>
-            <button type="button" class="drop" @click="fileInput?.click()">
-              <Icon name="image" :size="40" :stroke="1.4" />
-              <span class="drop-t1">把样本图片拖到这里</span>
+            <button type="button" class="drop" @click="input === 'folder' ? dirInput?.click() : fileInput?.click()">
+              <Icon :name="input === 'folder' ? 'folder' : 'image'" :size="40" :stroke="1.4" />
+              <span class="drop-t1">{{ input === 'folder' ? '选择一个文件夹' : '把样本图片拖到这里' }}</span>
               <span class="drop-t2">或点击选择 · 也可以直接 Ctrl+V 粘贴截图<br>一次可以选多张，按顺序识别并计时</span>
             </button>
           </template>
         </DetectionStage>
 
-        <div v-if="current" class="foot mono">
-          <template v-if="current.result">
-            <span>推理 {{ current.result.inference_time.toFixed(2) }} s</span>
-            <span>imgsz {{ state.config?.imgsz || 640 }}</span>
-            <span>{{ state.config?.model || 'YOLOv8s' }}</span>
-            <span class="push">{{ dets.length ? `${dets.length} 个目标` : '未检出害虫' }}</span>
+        <input ref="fileInput" type="file" accept="image/*" multiple hidden @change="onPick">
+        <input ref="dirInput" type="file" webkitdirectory directory multiple hidden @change="onPickDir">
+
+        <div v-if="reviewSample" class="review-bar">
+          <span class="mono">回看：样本 {{ reviewSample.no }} · {{ reviewSample.name }}</span>
+          <button type="button" class="btn btn-sm" @click="reviewId = null"><Icon name="refresh" :size="14" />返回实时</button>
+        </div>
+
+        <div v-if="stageSample?.counts" class="judge-row">
+          <span class="judge-t">判分 {{ stageSample.no }}</span>
+          <button type="button" class="btn btn-sm" :class="{ 'btn-primary': stageSample.verdict === '正确' }" @click="setVerdict('正确')">
+            <Icon name="check" :size="15" />正确
+          </button>
+          <button type="button" class="btn btn-sm" :class="{ 'btn-primary': stageSample.verdict === '错误' }" @click="setVerdict('错误')">
+            <Icon name="close" :size="15" />错误
+          </button>
+          <button type="button" class="btn btn-sm" :disabled="busy" @click="redetect">
+            <Icon name="refresh" :size="14" />重新识别
+          </button>
+          <span class="hint">再点一次取消 · 快捷键 Y / N</span>
+        </div>
+
+        <div v-if="stageSample" class="foot mono">
+          <template v-if="stageSample.result">
+            <span>推理 {{ stageSample.result.inference_time.toFixed(2) }} s</span>
+            <span v-if="stageSample.elapsed != null">第 {{ stageSample.elapsed.toFixed(1) }} s</span>
+            <span>{{ stageSample.result.detections.length ? `${stageSample.result.detections.length} 个目标` : '未检出害虫' }}</span>
+            <a v-if="stageSample.snapshotUrl" class="push link" :href="stageSample.snapshotUrl" target="_blank" rel="noopener">已存快照</a>
           </template>
-          <span v-else-if="current.status === 'error'" class="risk-high">识别失败：{{ current.error }}</span>
+          <span v-else-if="stageSample.status === 'error'" class="risk-high">识别失败：{{ stageSample.error }}</span>
           <span v-else>识别中…</span>
         </div>
       </div>
 
+      <!-- 本轮样本 -->
       <div class="panel panel-pad">
         <div class="session-head">
           <h2>本轮样本</h2>
           <span class="num count">{{ doneCount }} <span class="of">/ {{ target }}</span></span>
-          <span class="mono timing">用时 {{ clock(elapsed) }} · 限时 {{ clock(limit) }}<template v-if="avg"> · 平均 {{ avg.toFixed(2) }} s/张</template></span>
+          <span class="mono timing">用时 {{ clock(elapsed) }} · 限时 {{ clock(limit) }}</span>
+          <button v-if="mode === 'eval'" type="button" class="btn btn-sm" @click="loadServerSamples">从服务器载入</button>
           <button v-if="samples.length" type="button" class="btn btn-sm" @click="resetSession">新一轮</button>
         </div>
         <div class="progress" :title="`已完成 ${doneCount} / ${target}`">
@@ -286,26 +622,46 @@ onBeforeUnmount(() => {
             :key="s.id"
             type="button"
             class="thumb"
-            :class="{ on: s.id === currentId }"
+            :class="{ on: s.id === (reviewId ?? currentId) }"
             :aria-label="`样本 ${s.no}`"
-            @click="currentId = s.id"
+            @click="viewSample(s)"
           >
             <span class="ti">
               <img :src="s.url" alt="">
               <span v-if="s.status === 'running' || s.status === 'queued'" class="tq">{{ s.status === 'running' ? '识别中' : '排队' }}</span>
               <span v-if="s.result" class="tr" :class="`bg-${riskKey(s.result.risk.level)}`" />
+              <span v-if="s.verdict" class="tv-badge" :class="s.verdict === '正确' ? 'ok' : 'bad'">{{ s.verdict === '正确' ? '✓' : '✗' }}</span>
+              <span v-if="s.status === 'done' && !s.counts" class="tq none">未检出·不计分</span>
             </span>
             <span class="tc">
               <span class="tn">{{ s.result ? (s.result.detections[0]?.chinese_name || '未检出') : s.status === 'error' ? '失败' : `样本 ${s.no}` }}</span>
-              <span class="mono tv">{{ s.result?.detections[0] ? s.result.detections[0].confidence.toFixed(2) : '' }}</span>
+              <span class="mono tv">{{ s.elapsed != null ? `${s.elapsed.toFixed(1)}s` : '' }}</span>
             </span>
           </button>
         </div>
-        <p v-else class="empty">还没有样本。选图后从第一张开始计时，满 {{ target }} 张时对照限时看是否达标。←/→ 键切换样本。</p>
+        <p v-else class="empty">
+          还没有样本。{{ mode === 'eval' ? '把标本摆到镜头前，点「拍照并记录」开始计时，满 ' + target + ' 张停表。' : '拖图片进来或选择输入方式。' }}
+          ←/→ 切换样本，Y/N 判对错。
+        </p>
       </div>
     </section>
 
     <aside class="side-col">
+      <EvalPanel
+        v-if="mode === 'eval'"
+        :score="score"
+        :counted="doneCount"
+        :elapsed="elapsed"
+        :limit="limit"
+        :target="target"
+        :started="started"
+        :running="running"
+        :rubric="rubric"
+        @finish="finish"
+        @export="exportReport"
+        @reset="resetSession"
+      />
+
       <div class="panel panel-pad">
         <div class="eyebrow">风险判定</div>
         <div class="risk-line">
@@ -328,13 +684,13 @@ onBeforeUnmount(() => {
       </div>
 
       <SpecimenCard
-        v-if="top && current"
+        v-if="top && stageSample"
         :det="top"
-        :no="String(current.id).padStart(4, '0')"
-        origin="检测台"
-        :time="timeOf(current.result?.timestamp)"
+        :no="String(stageSample.id).padStart(4, '0')"
+        :origin="mode === 'eval' ? '评分作业' : '检测台'"
+        :time="timeOf(stageSample.result?.timestamp)"
         :area="dets.length === 1 ? area : null"
-        :elapsed="current.result?.inference_time ?? null"
+        :elapsed="stageSample.result?.inference_time ?? null"
       >
         <div v-if="dets.length > 1" class="others">
           <div class="eyebrow">本图共 {{ dets.length }} 个目标 · 总覆盖 {{ (area * 100).toFixed(1) }}%</div>
@@ -352,20 +708,15 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </SpecimenCard>
-      <div v-else-if="current?.status === 'done'" class="panel panel-pad">
-        <div class="eyebrow">标本签</div>
-        <p class="no-det">这张图没有检出害虫目标（阈值 {{ conf.toFixed(2) }}）。可以调低阈值后点"重新识别"。</p>
-      </div>
 
       <div class="panel panel-pad">
         <div class="panel-head">
           <h2>防治建议</h2>
           <span v-if="adviceTag" class="tag">{{ adviceTag.text }}</span>
-          <span v-if="adviceTag?.note" class="aside">{{ adviceTag.note }}</span>
         </div>
-        <AdviceBody v-if="current?.advice && dets.length" :text="current.advice" />
+        <AdviceBody v-if="adviceText && dets.length" :text="adviceText" />
         <p v-else class="empty">识别到害虫后，先给出知识库方案（离线、秒出），本地大模型就绪时再生成综合方案替换。</p>
-        <p v-if="current?.advice && dets.length" class="fine">药剂与剂量以当地植保部门发布为准。</p>
+        <p v-if="adviceText && dets.length" class="fine">药剂与剂量以当地植保部门发布为准。</p>
       </div>
     </aside>
   </main>
@@ -380,19 +731,22 @@ onBeforeUnmount(() => {
 .side-col { flex: 1 1 360px; min-width: 0; max-width: 100%; display: flex; flex-direction: column; gap: 24px; }
 @media (min-width: 1100px) { .side-col { max-width: 420px; } }
 
-.stage-panel { overflow: hidden; }
-.stage-panel.dragging { outline: 2px dashed var(--signal-ink); outline-offset: -6px; }
-.toolbar {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px;
-  padding: 14px 20px; border-bottom: 1px solid var(--line);
+/* 模式 / 输入方式 */
+.modebar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 18px; padding: 12px 16px; }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r); overflow: hidden; }
+.seg-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border: 0; background: var(--paper);
+  color: var(--ink-2); font-size: 13px; cursor: pointer; border-right: 1px solid var(--line);
 }
-.title { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
-.sample-no { font-size: 26px; white-space: nowrap; }
-.file { font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
-.tools { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.conf { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); }
-.conf input { width: 120px; accent-color: var(--brand); }
-.conf .mono { color: var(--ink); }
+.seg-btn:last-child { border-right: 0; }
+.seg-btn:hover { background: var(--inset); }
+.seg-btn.on { background: var(--brand); color: var(--brand-ink); }
+.conf { display: flex; align-items: center; gap: 10px; margin-left: auto; font-size: 13px; color: var(--ink-2); }
+.conf input { width: 110px; accent-color: var(--brand); }
+
+.stage-panel { overflow: hidden; padding: 16px 20px 0; }
+.stage-panel.dragging { outline: 2px dashed var(--signal-ink); outline-offset: -6px; }
+.stage-panel :deep(.stage) { margin: 0 auto; }
 .drop {
   display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 24px;
   border: 1.5px dashed var(--line-strong); border-radius: var(--r-lg); background: var(--panel);
@@ -401,10 +755,33 @@ onBeforeUnmount(() => {
 .drop:hover { border-color: var(--brand); color: var(--brand); }
 .drop-t1 { font-family: var(--font-serif); font-size: 17px; font-weight: 700; color: var(--ink); }
 .drop-t2 { font-size: 13px; color: var(--ink-3); line-height: 1.7; }
-.foot { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 12px 20px; font-size: 12px; color: var(--ink-2); }
-.push { margin-left: auto; }
 
-.session-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 14px; }
+.review-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 8px 12px;
+  background: var(--inset); border-radius: var(--r); font-size: 13px;
+}
+.review-bar .btn { margin-left: auto; }
+.judge-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding: 10px 0 0;
+  border-top: 1px solid var(--line);
+}
+.judge-t { font-size: 13px; color: var(--ink-2); }
+.foot { display: flex; flex-wrap: wrap; gap: 6px 24px; padding: 12px 0; font-size: 12px; color: var(--ink-2); }
+.push { margin-left: auto; }
+.link { color: var(--brand); text-decoration: none; }
+.link:hover { text-decoration: underline; }
+
+/* 视频 / 手机 */
+.video-box, .phone-box { display: flex; flex-direction: column; gap: 12px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.video { width: 100%; max-height: min(520px, 56vh); background: #000; border-radius: var(--r); }
+.phone-box { flex-direction: row; align-items: flex-start; gap: 20px; flex-wrap: wrap; }
+.qr { width: 168px; height: 168px; padding: 8px; background: #fff; border: 1px solid var(--line); image-rendering: pixelated; flex: none; }
+.phone-info { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.phone-t { font-size: 14px; color: var(--ink); }
+
+/* 本轮样本 */
+.session-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 14px; }
 .count { font-size: 22px; }
 .of { font-size: 16px; color: var(--ink-3); }
 .timing { margin-left: auto; font-size: 12px; color: var(--ink-2); }
@@ -422,9 +799,17 @@ onBeforeUnmount(() => {
 .thumb.on .ti { outline-color: var(--signal); }
 .ti img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .tq {
-  position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px;
+  position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; padding: 4px; text-align: center;
   background: rgba(15, 20, 17, 0.55); color: #F2F4EF;
 }
+.tq.none { background: rgba(15, 20, 17, 0.35); }
+.tq { font-size: 11px; }
+.tv-badge {
+  position: absolute; right: 4px; top: 4px; width: 18px; height: 18px; display: grid; place-items: center;
+  border-radius: 50%; font-size: 11px; font-weight: 700; color: #fff;
+}
+.tv-badge.ok { background: var(--brand); }
+.tv-badge.bad { background: var(--risk-high); }
 .tr { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; }
 .bg-high { background: var(--risk-high); }
 .bg-mid { background: var(--risk-mid); }
@@ -449,12 +834,11 @@ onBeforeUnmount(() => {
   border: 0; background: none; cursor: pointer; text-align: left; border-radius: var(--r-sm); font-size: 13px;
 }
 .other:hover, .other.on { background: var(--inset); }
-.no-det { margin-top: 8px; font-size: 13px; color: var(--ink-2); }
 .fine { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink-3); }
 
 @media (max-width: 640px) {
   .page { padding: 16px; gap: 16px; }
-  .toolbar { padding: 12px 14px; }
-  .tools { margin-left: 0; }
+  .conf { margin-left: 0; }
+  .timing { margin-left: 0; width: 100%; }
 }
 </style>
