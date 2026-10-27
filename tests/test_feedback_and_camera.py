@@ -405,3 +405,33 @@ def test_open_failure_then_retry_succeeds(moving_video, monkeypatch_factory=None
             cam.release_source(key)
         except Exception:
             pass
+
+
+@test_case
+def test_tts_rate_mapping_not_hyperspeed():
+    """旧换算把 180 变成 SAPI +8（超高速）；新换算默认 150 应为 0，180 也不超过 +2。"""
+    from feedback.tts import wpm_to_sapi
+    assert wpm_to_sapi(150) == 0
+    assert wpm_to_sapi(130) == -1
+    assert wpm_to_sapi(180) <= 2
+    assert wpm_to_sapi('bad') == 0
+
+
+@test_case
+def test_tts_splits_sentences_with_pauses():
+    """长播报按句切开，碎片并回前一句。"""
+    from feedback.tts import split_sentences
+    assert split_sentences('发现稻飞虱。风险较高！请尽快处理。') == ['发现稻飞虱。', '风险较高！', '请尽快处理。']
+    assert split_sentences('你好') == ['你好']
+    assert split_sentences('检测到害虫。嗯。') == ['检测到害虫。嗯。']
+
+
+@test_case
+def test_tts_multi_sentence_spoken_in_order(fake_engine):
+    eng, sink = fake_engine
+    eng.pause_sec = 0.01
+    eng.speak('第一句。第二句。')
+    deadline = time.time() + 3
+    while len(sink) < 2 and time.time() < deadline:
+        time.sleep(0.05)
+    assert sink == ['第一句。', '第二句。'], sink

@@ -30,6 +30,7 @@
 """
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -70,6 +71,37 @@ def _find_powershell():
     return None
 
 
+# ---------------------------------------------------------------- 让声音更像人
+_ZH_HINTS = ('chinese', 'zh-cn', 'zh_cn', 'huihui', 'yaoyao', 'kangkang',
+             'xiaoxiao', 'yunxi', 'hanhan', 'tracy', '中文', '普通话')
+_SENT_SPLIT = re.compile(r'(?<=[。！？!?；;\n])')
+
+
+def wpm_to_sapi(rate):
+    """把配置里的"字/分钟"换算成 SAPI Rate（-10~10）。
+
+    旧换算 `(rate-100)/10` 会把默认 180 变成 +8（接近最大语速，即"超高速"）。
+    新换算以 150 字/分钟 ≈ 0（SAPI 正常语速），每 20 字/分钟一档：
+    130 → -1（略缓、更像人在讲话），180 → +2。
+    """
+    try:
+        return max(-10, min(10, int(round((float(rate) - 150) / 20.0))))
+    except Exception:
+        return 0
+
+
+def split_sentences(text):
+    """按句末标点切成短句，句间留自然停顿；过短的碎片并回前一句。"""
+    parts = [p.strip() for p in _SENT_SPLIT.split(str(text)) if p and p.strip()]
+    merged = []
+    for p in parts:
+        if merged and len(p) < 4:
+            merged[-1] += p
+        else:
+            merged.append(p)
+    return merged or [str(text).strip()]
+
+
 # ================================================================ 后端实现
 class _Win32ComBackend:
     """直接驱动 SAPI.SPVoice（进程内、离线、同步阻塞由调用线程负责）。
@@ -90,11 +122,24 @@ class _Win32ComBackend:
             self._voice.Speak('', 0)      # 空串：只校验语音对象能不能用
         except Exception as exc:
             raise RuntimeError(f'SAPI 语音对象不可用: {type(exc).__name__}: {str(exc)[:80]}')
+        self._pick_chinese_voice()
+
+    def _pick_chinese_voice(self):
+        """优先选中文（最好是 Huihui/Xiaoxiao 这类自然音色），选不到就保持系统默认。"""
+        try:
+            tokens = self._voice.GetVoices()
+            for i in range(tokens.Count):
+                tk = tokens.Item(i)
+                desc = (tk.GetDescription() or '').lower()
+                if any(h in desc for h in _ZH_HINTS):
+                    self._voice.Voice = tk
+                    return
+        except Exception:
+            pass
 
     def set_rate(self, rate):
         try:
-            # SAPI Rate 取值 -10~10；这里把"字/分钟"式的数值映射过去
-            self._voice.Rate = max(-10, min(10, int((float(rate) - 100) / 10)))
+            self._voice.Rate = wpm_to_sapi(rate)
         except Exception:
             pass
 
@@ -124,10 +169,18 @@ class _Pyttsx3Backend:
             pythoncom.CoInitialize()
         self._engine = pyttsx3.init()
         self._iterating = False
+        try:
+            for v in self._engine.getProperty('voices'):
+                blob = f"{getattr(v, 'name', '')} {getattr(v, 'id', '')} {getattr(v, 'languages', '')}".lower()
+                if any(h in blob for h in _ZH_HINTS):
+                    self._engine.setProperty('voice', v.id)
+                    break
+        except Exception:
+            pass
 
     def set_rate(self, rate):
         try:
-            self._engine.setProperty('rate', int(rate))
+            self._engine.setProperty('rate', int(min(float(rate), 175)))
         except Exception:
             pass
 
@@ -174,7 +227,7 @@ class _PowerShellBackend:
         self._volume = 100
 
     def set_rate(self, rate):
-        self._rate = max(-10, min(10, int((float(rate) - 100) / 10)))
+        self._rate = wpm_to_sapi(rate)
 
     def set_volume(self, volume):
         self._volume = max(0, min(100, int(float(volume) * 100)))
@@ -184,6 +237,9 @@ class _PowerShellBackend:
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            "try { $s.SelectVoiceByHints([System.Speech.Synthesis.VoiceGender]::Female, "
+            "[System.Speech.Synthesis.VoiceAge]::Adult, 0, "
+            "[System.Globalization.CultureInfo]::GetCultureInfo('zh-CN')) } catch {}; "
             f"$s.Rate = {self._rate}; $s.Volume = {self._volume}; "
             f"$s.Speak('{safe}');"
         )
@@ -251,7 +307,7 @@ class BackendRegistry:
         return None, 'none', errors
 
 
-def _build_backend(prefer='auto', rate=180, volume=1.0, selftest=True):
+def _build_backend(prefer='auto', rate=150, volume=1.0, selftest=True):
     """后端构建入口（模块级，返回 (backend, backend_name, errors)）。
 
     这是 TTSEngine 线程里实际调用的构建缝（2026-10-16 补回）：
@@ -270,14 +326,15 @@ def _build_backend(prefer='auto', rate=180, volume=1.0, selftest=True):
 class TTSEngine:
     """专用线程 + 队列的离线播报器；任何失败都不会抛出到调用方。"""
 
-    def __init__(self, enabled=True, engine='auto', rate=180, volume=1.0,
-                 dedup_sec=0.5, init_selftest=True):
+    def __init__(self, enabled=True, engine='auto', rate=150, volume=1.0,
+                 dedup_sec=0.5, init_selftest=True, pause_sec=0.25):
         self.enabled = bool(enabled) and engine != 'none'
         self.engine_pref = engine or 'auto'
         self.rate = rate
         self.volume = volume
         self.dedup_sec = float(dedup_sec or 0)
         self.init_selftest = bool(init_selftest)
+        self.pause_sec = float(pause_sec)
 
         self._queue = queue.Queue(maxsize=4)
         self._thread = None
@@ -341,7 +398,7 @@ class TTSEngine:
                 continue
             t0 = time.time()
             try:
-                self._backend.speak(text)
+                self._speak_naturally(text)
                 self._spoken += 1
                 print(f"[TTS] say ok ({time.time() - t0:.2f}s) {text}", flush=True)
             except Exception as exc:
@@ -353,6 +410,16 @@ class TTSEngine:
                 pythoncom.CoUninitialize()
             except Exception:
                 pass
+
+    def _speak_naturally(self, text):
+        """逐句念并在句间留停顿；念到一半来了新句子就不再念剩下的（最新优先）。"""
+        sentences = split_sentences(text)
+        for i, sent in enumerate(sentences):
+            self._backend.speak(sent)
+            if i < len(sentences) - 1:
+                if not self._queue.empty():
+                    break
+                time.sleep(self.pause_sec)
 
     # ------------------------------------------------------------ 对外
     @staticmethod
