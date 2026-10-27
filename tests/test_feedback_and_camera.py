@@ -435,3 +435,21 @@ def test_tts_multi_sentence_spoken_in_order(fake_engine):
     while len(sink) < 2 and time.time() < deadline:
         time.sleep(0.05)
     assert sink == ['第一句。', '第二句。'], sink
+
+
+@test_case
+def test_powershell_backend_one_process_for_all_sentences():
+    """powershell 后端多句只起一个子进程，且脚本含停顿、单引号已转义。"""
+    calls = []
+    orig_run, orig_find = tts_mod.subprocess.run, tts_mod._find_powershell
+    tts_mod.subprocess.run = lambda cmd, **kw: calls.append(cmd[-1])
+    tts_mod._find_powershell = lambda: 'powershell.exe'
+    try:
+        be = tts_mod._PowerShellBackend()
+        be.set_rate(150)
+        be.speak_sentences(["它说'好'。", '第二句。'], 0.25)
+    finally:
+        tts_mod.subprocess.run, tts_mod._find_powershell = orig_run, orig_find
+    assert len(calls) == 1, calls
+    assert 'Start-Sleep -Milliseconds 250' in calls[0]
+    assert "''好''" in calls[0] and '$s.Rate = 0' in calls[0]

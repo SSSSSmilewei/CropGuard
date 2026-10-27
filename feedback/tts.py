@@ -233,7 +233,16 @@ class _PowerShellBackend:
         self._volume = max(0, min(100, int(float(volume) * 100)))
 
     def speak(self, text):
-        safe = str(text).replace("'", "''")
+        self.speak_sentences([str(text)], 0.0)
+
+    def speak_sentences(self, sentences, pause_sec):
+        """一个子进程念完所有句子，句间用 Start-Sleep 停顿（避免每句重启 powershell）。"""
+        lines = []
+        for i, sent in enumerate(sentences):
+            safe = str(sent).replace("'", "''")
+            lines.append(f"$s.Speak('{safe}');")
+            if i < len(sentences) - 1 and pause_sec > 0:
+                lines.append(f"Start-Sleep -Milliseconds {int(pause_sec * 1000)};")
         script = (
             "Add-Type -AssemblyName System.Speech; "
             "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
@@ -241,13 +250,13 @@ class _PowerShellBackend:
             "[System.Speech.Synthesis.VoiceAge]::Adult, 0, "
             "[System.Globalization.CultureInfo]::GetCultureInfo('zh-CN')) } catch {}; "
             f"$s.Rate = {self._rate}; $s.Volume = {self._volume}; "
-            f"$s.Speak('{safe}');"
+            + " ".join(lines)
         )
         creationflags = 0x08000000 if os.name == 'nt' else 0   # 不弹窗
         subprocess.run([_find_powershell(), '-NoProfile', '-NonInteractive',
                         '-Command', script],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       timeout=30, creationflags=creationflags)
+                       timeout=60, creationflags=creationflags)
 
 
 # ================================================================ 后端注册表
@@ -414,6 +423,10 @@ class TTSEngine:
     def _speak_naturally(self, text):
         """逐句念并在句间留停顿；念到一半来了新句子就不再念剩下的（最新优先）。"""
         sentences = split_sentences(text)
+        batch = getattr(self._backend, 'speak_sentences', None)
+        if batch is not None:               # 子进程型后端：整段一次念完
+            batch(sentences, self.pause_sec)
+            return
         for i, sent in enumerate(sentences):
             self._backend.speak(sent)
             if i < len(sentences) - 1:
