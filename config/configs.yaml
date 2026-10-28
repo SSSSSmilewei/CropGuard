@@ -1,7 +1,8 @@
 # 模型相关的配置文件
 MODEL:
   # 模型文件
-  WEIGHT: './runs/train/pest27_final4/weights/best.pt'
+  # 2026-10-28 实体标本微调版（scripts/train_specimen.py）；要回退原模型改回 pest27_final4
+  WEIGHT: './runs/train/pest27_specimen/weights/best.pt'
   # 取值 'cpu'、'cuda:0'、'0'、 '1'、 '2'等 cpu代表以cpu进行推理，0代表使用第0块显卡
   DEVICE: 'cuda:0'
   # 阈值

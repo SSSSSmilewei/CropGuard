@@ -259,6 +259,59 @@ class _PowerShellBackend:
                        timeout=60, creationflags=creationflags)
 
 
+class _NeuralBackend:
+    """神经网络音色（edge-tts 晓晓，见 feedback/neural_voice.py）。
+
+    句子有缓存 → 离线直接放；没缓存 → 联网现合成并写缓存；
+    断网又没缓存 → 这一句交给 System.Speech 念（音色会变，但绝不静默）。
+    """
+
+    name = 'neural'
+
+    def __init__(self):
+        from feedback import neural_voice
+        ok, why = neural_voice.available()
+        if not ok:
+            raise RuntimeError(why)
+        self._nv = neural_voice
+        self._volume = 1.0
+        self._fallback = None
+        self.fallback_count = 0
+
+    def set_rate(self, rate):
+        pass   # 神经音色用合成时的固定语速，SAPI 的字/分钟不适用
+
+    def set_volume(self, volume):
+        self._volume = max(0.0, min(1.0, float(volume)))
+
+    def _fallback_backend(self):
+        if self._fallback is None:
+            self._fallback = _PowerShellBackend()
+            self._fallback.set_volume(self._volume)
+        return self._fallback
+
+    def speak(self, text):
+        if not str(text or '').strip():
+            return   # 构建时的空播校验：available() 已检查过 MCI 与缓存
+        self.speak_sentences([text], 0.0)
+
+    def speak_sentences(self, sentences, pause_sec):
+        for i, sent in enumerate(sentences):
+            path = self._nv.cache_path(sent)
+            if not self._nv.is_cached(sent):
+                try:
+                    path = self._nv.synthesize(sent)
+                except Exception:
+                    path = None
+            if path is not None:
+                self._nv.play_file(path, self._volume)
+            else:
+                self.fallback_count += 1
+                self._fallback_backend().speak(sent)
+            if i < len(sentences) - 1 and pause_sec > 0:
+                time.sleep(pause_sec)
+
+
 # ================================================================ 后端注册表
 class BackendRegistry:
     """管理可选 TTS 后端的优先级、实例化与真实链路校验。
@@ -269,6 +322,7 @@ class BackendRegistry:
     """
 
     _BACKENDS = [
+        ('neural', _NeuralBackend),
         ('win32com', _Win32ComBackend),
         ('pyttsx3', _Pyttsx3Backend),
         ('powershell', _PowerShellBackend),

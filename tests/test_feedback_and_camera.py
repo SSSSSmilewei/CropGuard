@@ -134,11 +134,12 @@ def test_feedback_spray_info_in_text(fake_engine):
     eng, sink = fake_engine
     fb = Feedback(enabled=False, tts=eng, announce_no_risk=True)
     fb.enabled = True
-    fb.trigger('高风险', ['蚜虫'], spray_info='已给片区A喷淋3秒')
+    fb.trigger('高风险', ['蚜虫'], spray_info='我已经给A区喷了3秒药')
     deadline = time.time() + 2
-    while not sink and time.time() < deadline:
+    # 逐句播报：喷淋动作在第二句
+    while not any('喷了3秒药' in x for x in sink) and time.time() < deadline:
         time.sleep(0.05)
-    assert sink and '喷淋3秒' in sink[-1], sink
+    assert any('喷了3秒药' in x for x in sink), sink
 
 
 # ==================== 摄像头采集 ====================
